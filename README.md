@@ -8,27 +8,35 @@ This repository is intentionally being built one phase at a time. The current so
 
 ## Current status
 
-**Gmail ingestion, the 200-email human dataset, Jev v4 evaluation, the dashboard shell, the durable Supabase classification schema, and the Python migration are complete. The resumable production worker and Command Center are next.**
+**Gmail ingestion, the 200-email human dataset, Jev v4 evaluation, the dashboard shell, the durable Supabase classification schema, the Python migration, and the Phase 6 worker/Command Center are complete. Phase 7 is the controlled mailbox-wide validation run.**
 
 ## Python setup
 
 The backend, Gmail integration, Supabase access, Jev pipeline, command-line tools, and tests use Python. The dashboard itself remains plain browser HTML, CSS, and JavaScript—no TypeScript or frontend build step is required.
 
 ```bash
-uv sync --extra dev
-uv run pytest
-uv run email-dashboard
+uv sync --extra dev --no-editable
+./email --help
+.venv/bin/pytest
 ```
 
-Useful commands:
+`manage.py` is the supported launcher. It inserts this repository's `src/` directory before importing the application, so it does not depend on editable-install metadata inside `.venv/bin`.
+
+Typical commands:
 
 ```bash
-uv run email-gmail-auth
-uv run email-ingest
-uv run email-ingest --full --resume
-uv run email-inspect
-uv run email-sample --count 150
+./email gmail-auth
+./email ingest
+./email ingest --full --resume
+./email inspect
+./email sample --count 150
+./email dashboard
+./email classify --scope unclassified --limit 25 --concurrency 3 --batch-size 10
 ```
+
+The `./email` launcher selects the correct project environment automatically. The `--no-editable` setup option is intentional: editable `.pth` files can fail when the checkout path contains spaces, as this one does. See the [command runbook](./docs/COMMANDS.md) for each phase and recovery instructions.
+
+The dashboard's **Command Center** exposes the same Phase 6 worker with count-only preview, confidence/concurrency/batch controls, live run progress, and cancellation. A controlled first run is recommended before processing the entire mailbox.
 
 - Why Supabase Postgres
 
@@ -89,7 +97,7 @@ Kanban dashboard -> Open original message in Gmail
 The canonical private human-labeled dataset is `data/labeling/generated/labeled-emails.json`. Validate it and rebuild the deterministic development/holdout split with:
 
 ```bash
-uv run email-jev-prepare
+./email jev-prepare
 ```
 
 The versioned classifier sends four independent questions over the same email state in one TypeSafe request:
@@ -104,18 +112,18 @@ The versioned classifier sends four independent questions over the same email st
 After setting `TYPESAFE_API_KEY` in `.env`, run the 39-email held-out evaluation:
 
 ```bash
-uv run email-jev-evaluate
+./email jev-evaluate
 ```
 
 For broader error analysis, run all 199 definitively labeled emails without replacing the held-out report:
 
 ```bash
-uv run email-jev-evaluate --all-labeled
+./email jev-evaluate --all-labeled
 ```
 
 This larger result is diagnostic rather than a clean generalization estimate because it includes the 160 development examples. Those emails are used to improve and version the criteria; they are not dumped into each Jev request. The 39 held-out emails are never supplied as reference examples. The benchmark UI dataset selector keeps both reports available.
 
-The evaluator imports the same classifier function and question configuration that production will call. It records the returned model version, full probability distributions, confidence, raw accuracy, automatic coverage, automatic-only accuracy, per-category results, and token usage. Run `uv run email-dashboard` and open **Evaluate Jev** to inspect the report. Saved results from an older classifier version are marked stale rather than mixed with the current benchmark.
+The evaluator imports the same classifier function and question configuration that production will call. It records the returned model version, full probability distributions, confidence, raw accuracy, automatic coverage, automatic-only accuracy, per-category results, and token usage. Run `./email dashboard` and open **Evaluate Jev** to inspect the report. Saved results from an older classifier version are marked stale rather than mixed with the current benchmark.
 
 The existing 200 human labels define email-category ground truth only. Therefore, the benchmark scores the category Choice and clearly displays next-action, urgency, and draft-needed outputs as unscored. Those fields need separate human labels before their accuracy can be claimed. The single offer example remains in development, so the first held-out report cannot measure offer accuracy.
 
@@ -126,7 +134,7 @@ Phase 5 adds versioned classifier records, frozen classification runs, immutable
 After applying migrations `002` and `003`, import the existing private labels and register the current benchmarked classifier with:
 
 ```bash
-uv run email-phase5-bootstrap
+./email phase5-bootstrap
 ```
 
 The bootstrap is idempotent. Repeating it imports zero duplicate labels. It stores the benchmark summary but does not upload the private per-email benchmark result bodies.
@@ -169,6 +177,8 @@ Do not paste real credentials into documentation, issues, or commits.
 ## Documentation
 
 - [Implementation plan](./IMPLEMENTATION_PLAN.md)
+- [Command runbook](./docs/COMMANDS.md)
+- [Code architecture](./docs/ARCHITECTURE.md)
 - [Gmail synchronization guide](https://developers.google.com/workspace/gmail/api/guides/sync)
 - [Gmail message resource](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages)
 - [Supabase database guide](https://supabase.com/docs/guides/database/overview)

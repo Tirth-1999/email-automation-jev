@@ -1,0 +1,16 @@
+#!/bin/sh
+# Friendly project launcher. It always uses this checkout's virtual environment,
+# regardless of the directory from which the command is invoked.
+set -eu
+
+PROJECT_DIRECTORY=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PYTHON="$PROJECT_DIRECTORY/.venv/bin/python"
+export EMAIL_AUTOMATION_PROG="./email"
+
+if [ ! -x "$PYTHON" ]; then
+  echo "Project environment is missing. Run this once:" >&2
+  echo "  cd \"$PROJECT_DIRECTORY\" && uv sync --extra dev --no-editable" >&2
+  exit 1
+fi
+
+exec "$PYTHON" "$PROJECT_DIRECTORY/manage.py" "$@"

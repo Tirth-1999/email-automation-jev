@@ -26,7 +26,7 @@ Build a dependable job-email workspace that:
 | 4 | Dashboard shell and UI migration | Complete |
 | 5 | Durable run, result, review, and label storage | Complete |
 | 5.5 | Python migration and TypeScript retirement | Complete |
-| 6 | Classification worker and Command Center | Not started |
+| 6 | Classification worker and Command Center | Complete; ready for a controlled production run |
 | 7 | Full-dataset validation and production classification | Not started |
 | 8 | Correction and optional LLM-review workflow | Not started |
 | 9 | Email Board and analytics | Not started |
@@ -299,6 +299,43 @@ The browser dashboard intentionally remains plain JavaScript because browsers ex
 
 ## Phase 6 — Classification worker and Command Center
 
+Status: complete for implementation. The worker and dashboard are ready for a controlled run; no production Jev batch was started automatically.
+
+### Implemented
+
+- `classification_worker.py` creates bounded, durable production runs and freezes the selected email IDs as queued result rows.
+- Worker batches use configurable concurrency (`1–10`) and batch size (`1–250`), persist each result immediately, refresh counters after each batch, and preserve failures without losing successful work.
+- Jev provider rate-limit, timeout, and server failures use bounded exponential retry. Permanent email failures become `failed` result rows with sanitized error text.
+- Cancellation is persisted on `classification_runs.cancellation_requested_at`; the worker stops scheduling new batches and leaves completed work intact.
+- `./email classify` supports `all`, `unclassified`, `uncertain`, and `failed` scopes, limits, concurrency, batch size, thresholds, and `--run-id` resume.
+- The Command Center now has preview, start, recent-run progress, five-second polling, and cancellation controls through `/api/command/preview`, `/api/command/runs`, `/api/command/status`, and `/api/command/cancel`.
+
+### Controlled first run
+
+Start with a small limit and verify the result set in the dashboard:
+
+```bash
+./email classify --scope unclassified --limit 25 --concurrency 3 --batch-size 10
+```
+
+Then increase the limit after checking the run counters and Jev usage:
+
+```bash
+./email classify --scope unclassified --limit 200
+```
+
+The same operation can be launched from **Command Center**. The dashboard request returns after queuing; the Python worker continues in the background and the durable run remains the source of truth.
+
+### Acceptance criteria
+
+- [x] A run freezes selected email IDs before classification starts.
+- [x] Four Jev judgments are sent together for each email.
+- [x] Concurrency, batching, retries, partial failure, and cancellation are bounded and persisted.
+- [x] Completed results are written immediately and remain immutable.
+- [x] Run counters and progress are visible through the Command Center.
+- [x] A run can be resumed with `--run-id` without re-enqueuing completed results.
+- [x] Local worker/configuration tests and dashboard JavaScript checks pass.
+
 ### Batch-processing contract
 
 1. Create a classification run.
@@ -441,20 +478,20 @@ This feature remains roadmap/technical debt until its prerequisites are complete
 
 ## Cleanup and retirement policy
 
-The repository was audited at this planning point. Gmail auth/ingestion, inspection, sampling, labeling server, Jev preparation, and Jev evaluation scripts are all still reachable from active package commands or current UI workflows. They are not dead code yet.
+The repository was audited after the Python migration. Gmail auth/ingestion, inspection, sampling, labeling server, Jev preparation, Jev evaluation, and Phase 6 worker commands are reachable through the Python package entry points.
 
 ### Keep for now
 
-- Gmail authentication and ingestion scripts.
-- Email inspection and sampling scripts.
-- The current labeling UI and its server.
-- Jev dataset preparation and evaluation scripts.
+- Python Gmail authentication and ingestion commands.
+- Python email inspection and sampling commands.
+- The current browser labeling UI and Python dashboard server.
+- Python Jev dataset preparation, evaluation, and classification commands.
 - Private generated datasets and benchmark artifacts needed for reproducibility.
 
 ### Retire later
 
-- The legacy `labeling-ui` and `scripts/serve-labeling-ui.ts` were removed after dashboard parity checks passed.
-- Convert CLI scripts into thin wrappers over shared library/worker functions; remove duplicated internals after tests pass.
+- TypeScript backend, CLI scripts, Node manifests, and TypeScript tests were removed after Python parity checks passed.
+- Keep CLI commands thin wrappers over shared Python modules; remove duplicated internals after tests pass.
 - Archive or prune generated artifacts only after a versioned manifest proves they are reproducible and no active run references them.
 - Never rewrite database migration history already applied remotely.
 
@@ -466,10 +503,9 @@ The duplicate dashboard plan and superseded labeling UI/server were removed afte
 
 ## Delivery order from here
 
-1. **Next:** Phase 6, resumable classification worker and Command Center.
-2. Phase 7, frozen dataset validation, benchmark approval, and staged mailbox run.
-3. Phase 8, corrections and optional OpenAI review.
-4. Phase 9, Email Board and analytics.
+1. **Next:** Phase 7, frozen dataset validation, benchmark approval, and staged mailbox run.
+2. Phase 8, corrections and optional OpenAI review.
+3. Phase 9, Email Board and analytics.
 5. Later phases only after their prerequisites pass.
 
 For every phase: confirm scope, implement, run automated checks, verify acceptance criteria together, update this plan, and only then begin the next phase.

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, cast
 
 from .models import AddressValue, Direction
 from .reservoir_sample import add_to_reservoir, create_seeded_random, shuffle_in_place
@@ -20,6 +20,12 @@ class LabelingEmail(TypedDict):
     snippet: str
     body_text: str
     label_ids: list[str]
+
+
+class SampledLabelingEmail(LabelingEmail):
+    """A labeling email annotated with why it entered the review sample."""
+
+    selection_reason: str
 
 
 LABEL_CATEGORIES = (
@@ -59,14 +65,15 @@ def _reservoir(values: list[LabelingEmail], count: int, seed: str) -> list[Label
     return result
 
 
-def select_labeling_sample(emails: list[LabelingEmail], sample_size: int, seed: str) -> list[dict[str, object]]:
+def select_labeling_sample(emails: list[LabelingEmail], sample_size: int, seed: str) -> list[SampledLabelingEmail]:
     required = [email for email in emails if is_atc_email(email)]
     if len(required) > sample_size:
         raise ValueError(f"{len(required)} ATC emails exceed the requested {sample_size}-email review size")
     rng = create_seeded_random(seed)
     candidates = [email for email in emails if not is_atc_email(email)]
-    selected = [{**email, "selection_reason": "atc_required"} for email in required] + [
-        {**email, "selection_reason": "random"} for email in _reservoir(candidates, sample_size - len(required), seed)
+    selected = [cast(SampledLabelingEmail, {**email, "selection_reason": "atc_required"}) for email in required] + [
+        cast(SampledLabelingEmail, {**email, "selection_reason": "random"})
+        for email in _reservoir(candidates, sample_size - len(required), seed)
     ]
     shuffle_in_place(selected, rng)
     return selected

@@ -11,6 +11,18 @@ from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 
+from .classification_repository import (
+    create_classification_run,
+    enqueue_classification_emails,
+    find_classifier_version,
+    request_classification_cancellation,
+)
+from .classification_worker import (
+    ClassificationConfig,
+    preview_selection,
+    run_classification,
+    select_email_ids,
+)
 from .jev_classifier import CLASSIFIER_VERSION
 from .labeling_sample import LABEL_CATEGORIES, select_additional_sample
 from .labeling_store import read_all_active_emails, read_json, to_review_email, write_private_json
@@ -22,6 +34,7 @@ POOL_PATH = ROOT / "data/labeling/generated/email-review-pool.json"
 LABELS_PATH = ROOT / "data/labeling/generated/labeled-emails.json"
 MUTATION_LOCK = threading.Lock()
 EMAIL_CACHE: list[dict] | None = None
+COMMAND_SCOPES = {"all", "unclassified", "uncertain", "failed"}
 
 
 def now() -> str:
@@ -34,6 +47,73 @@ def empty_labels() -> dict:
 
 def labels_store() -> dict:
     return read_json(LABELS_PATH) if LABELS_PATH.exists() else empty_labels()
+
+
+def database_client():
+    return create_database_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
+
+
+def mailbox_account(database):
+    rows = database.table("gmail_accounts").select("id,gmail_address").order("created_at").limit(1).execute().data or []
+    if not rows:
+        raise ValueError("No Gmail account is registered. Run Gmail ingestion first.")
+    return rows[0]
+
+
+def command_config(value: dict) -> ClassificationConfig:
+    return ClassificationConfig(
+        model=str(value.get("model") or os.getenv("TYPESAFE_MODEL", "jev-1.13.0")),
+        minimum_top_probability=float(value.get("minimum_top_probability", os.getenv("JEV_MIN_TOP_PROBABILITY", "0.6"))),
+        concurrency=int(value.get("concurrency", 5)),
+        batch_size=int(value.get("batch_size", 25)),
+    )
+
+
+def start_command_run(value: dict) -> dict:
+    database = database_client()
+    account = mailbox_account(database)
+    config = command_config(value)
+    classifier = find_classifier_version(database, str(value.get("classifier_version") or CLASSIFIER_VERSION))
+    if not classifier:
+        raise ValueError("The requested classifier version is not registered in Supabase.")
+    if classifier.get("status") != "approved":
+        raise ValueError("Only an approved classifier version can run in production.")
+    scope = str(value.get("scope") or "unclassified")
+    if scope not in COMMAND_SCOPES:
+        raise ValueError("scope must be all, unclassified, uncertain, or failed")
+    maximum = int(value["maximum"]) if value.get("maximum") is not None else None
+    email_ids = select_email_ids(database, account["id"], scope=scope, maximum=maximum)
+    run = create_classification_run(
+        database,
+        {
+            "gmail_account_id": account["id"],
+            "classifier_version_id": classifier["id"],
+            "run_kind": "production",
+            "model_requested": config.model,
+            "selection": {"scope": scope, "maximum": maximum},
+            "minimum_top_probability": config.minimum_top_probability,
+            "concurrency": config.concurrency,
+            "batch_size": config.batch_size,
+        },
+    )
+    run_id = str(run["id"])
+    enqueue_classification_emails(database, run_id, email_ids)
+
+    def background() -> None:
+        try:
+            run_classification(
+                database,
+                run_id=run_id,
+                config=config,
+                api_key=os.getenv("TYPESAFE_API_KEY"),
+            )
+        except BaseException as error:
+            database.table("classification_runs").update({"status": "failed", "finished_at": now(), "error_message": str(error)[:2000]}).eq(
+                "id", run_id
+            ).execute()
+
+    threading.Thread(target=background, name=f"classification-{run_id[:8]}", daemon=True).start()
+    return {**run, "queued_email_count": len(email_ids)}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -54,6 +134,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/command/status":
+            database = database_client()
+            run_id = parse_qs(parsed.query).get("run_id", [None])[0]
+            if run_id:
+                run = database.table("classification_run_summary").select("*").eq("id", run_id).single().execute().data
+                return self.json_response(200, {"run": run})
+            runs = database.table("classification_run_summary").select("*").order("created_at", desc=True).limit(20).execute().data or []
+            return self.json_response(200, {"runs": runs, "classifier_version": CLASSIFIER_VERSION})
+        if parsed.path == "/api/command/preview":
+            database = database_client()
+            account = mailbox_account(database)
+            query = parse_qs(parsed.query)
+            scope = query.get("scope", ["unclassified"])[0]
+            if scope not in COMMAND_SCOPES:
+                return self.json_response(400, {"error": "Invalid classification scope"})
+            maximum_text = query.get("maximum", [None])[0]
+            maximum = int(maximum_text) if maximum_text else None
+            return self.json_response(200, preview_selection(database, account["id"], scope=scope, maximum=maximum))
         if parsed.path == "/api/labels":
             return self.json_response(200, labels_store())
         if parsed.path == "/api/benchmark":
@@ -139,6 +237,26 @@ class Handler(BaseHTTPRequestHandler):
                             "labeled_at": labeled["labeled_at"],
                         },
                     )
+                if self.path == "/api/command/preview":
+                    database = database_client()
+                    account = mailbox_account(database)
+                    scope = str(value.get("scope") or "unclassified")
+                    if scope not in COMMAND_SCOPES:
+                        return self.json_response(400, {"error": "Invalid classification scope"})
+                    maximum = int(value["maximum"]) if value.get("maximum") is not None else None
+                    return self.json_response(
+                        200,
+                        preview_selection(database, account["id"], scope=scope, maximum=maximum),
+                    )
+                if self.path == "/api/command/runs":
+                    return self.json_response(202, start_command_run(value))
+                if self.path == "/api/command/cancel":
+                    database = database_client()
+                    run_id = str(value.get("run_id") or "")
+                    if not run_id:
+                        return self.json_response(400, {"error": "run_id is required"})
+                    request_classification_cancellation(database, run_id)
+                    return self.json_response(202, {"run_id": run_id, "status": "cancellation_requested"})
                 if self.path == "/api/resample":
                     count = value.get("count", 50)
                     strategy = "random" if value.get("strategy") == "random" else "balanced"

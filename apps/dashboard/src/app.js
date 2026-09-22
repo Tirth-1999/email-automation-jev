@@ -22,6 +22,17 @@ const benchmarkCards = document.querySelector("#benchmarkCards");
 const benchmarkRows = document.querySelector("#benchmarkRows");
 const benchmarkFilter = document.querySelector("#benchmarkFilter");
 const benchmarkScope = document.querySelector("#benchmarkScope");
+const commandView = document.querySelector("#commandView");
+const commandForm = document.querySelector("#commandForm");
+const commandScope = document.querySelector("#commandScope");
+const commandMaximum = document.querySelector("#commandMaximum");
+const commandThreshold = document.querySelector("#commandThreshold");
+const commandConcurrency = document.querySelector("#commandConcurrency");
+const commandBatchSize = document.querySelector("#commandBatchSize");
+const commandPreview = document.querySelector("#commandPreview");
+const commandStatus = document.querySelector("#commandStatus");
+const commandRuns = document.querySelector("#commandRuns");
+const commandRunCount = document.querySelector("#commandRunCount");
 const placeholderView = document.querySelector("#placeholderView");
 const placeholderPhase = document.querySelector("#placeholderPhase");
 const placeholderEyebrow = document.querySelector("#placeholderEyebrow");
@@ -38,6 +49,7 @@ let activeFilter = "all";
 let searchTerm = "";
 let noteSaveTimer;
 let benchmarkReport = null;
+let commandPollTimer;
 
 const workspaceViews = {
   command: {
@@ -92,12 +104,14 @@ function displayPercent(value) {
 function switchView(view) {
   const benchmarkActive = view === "benchmark";
   const reviewActive = view === "review";
-  const placeholderActive = view in workspaceViews;
+  const commandActive = view === "command";
+  const placeholderActive = view in workspaceViews && !commandActive;
   app.classList.toggle("benchmark-mode", !reviewActive);
   reviewSidebar.hidden = !reviewActive;
   reviewReader.hidden = !reviewActive;
   reviewClassifier.hidden = !reviewActive;
   benchmarkView.hidden = !benchmarkActive;
+  commandView.hidden = !commandActive;
   placeholderView.hidden = !placeholderActive;
   topActions.hidden = !reviewActive;
   progressBlock.hidden = !reviewActive;
@@ -108,6 +122,11 @@ function switchView(view) {
   }
   if (placeholderActive) renderPlaceholder(workspaceViews[view]);
   if (benchmarkActive) void loadBenchmark();
+  window.clearInterval(commandPollTimer);
+  if (commandActive) {
+    void loadCommandRuns();
+    commandPollTimer = window.setInterval(() => void loadCommandRuns(), 5000);
+  }
 }
 
 function navigateToView(view) {
@@ -331,6 +350,107 @@ async function loadBenchmark() {
     benchmarkEmpty.append(message, command);
   } catch (error) {
     benchmarkEmpty.textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function commandPayload() {
+  const maximum = commandMaximum.value.trim();
+  return {
+    scope: commandScope.value,
+    maximum: maximum ? Number(maximum) : null,
+    minimum_top_probability: Number(commandThreshold.value),
+    concurrency: Number(commandConcurrency.value),
+    batch_size: Number(commandBatchSize.value),
+  };
+}
+
+async function previewCommand() {
+  commandStatus.textContent = "Calculating selected email count…";
+  commandStatus.classList.remove("error");
+  try {
+    const payload = commandPayload();
+    const query = new URLSearchParams({ scope: payload.scope });
+    if (payload.maximum) query.set("maximum", String(payload.maximum));
+    const response = await fetch(`/api/command/preview?${query}`, { cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Preview failed");
+    commandPreview.textContent = `${result.selected_count} emails selected · ${result.batch_count} batches · ${result.available_count} available for this scope.`;
+    commandStatus.textContent = "Preview ready.";
+  } catch (error) {
+    commandStatus.textContent = error instanceof Error ? error.message : String(error);
+    commandStatus.classList.add("error");
+  }
+}
+
+function renderCommandRuns(runs) {
+  commandRuns.replaceChildren();
+  commandRunCount.textContent = `${runs.length} recent`;
+  if (!runs.length) {
+    commandRuns.textContent = "No classification runs yet.";
+    return;
+  }
+  for (const run of runs) {
+    const item = document.createElement("article");
+    item.className = "command-run";
+    const title = document.createElement("strong");
+    title.textContent = `${run.run_kind || "production"} · ${run.status}`;
+    const date = document.createElement("small");
+    date.textContent = run.created_at ? new Date(run.created_at).toLocaleString() : "";
+    const counts = document.createElement("small");
+    counts.textContent = `${run.processed_count || 0} / ${run.total_count || 0} processed · ${run.succeeded_count || 0} succeeded · ${run.failed_count || 0} failed`;
+    const progress = document.createElement("div");
+    progress.className = "run-progress";
+    const fill = document.createElement("span");
+    fill.style.width = `${Number(run.progress_percent || 0)}%`;
+    progress.append(fill);
+    item.append(title, date, counts, progress);
+    if (["queued", "running"].includes(run.status)) {
+      const cancel = document.createElement("button");
+      cancel.className = "button quiet";
+      cancel.type = "button";
+      cancel.textContent = "Cancel";
+      cancel.addEventListener("click", async () => {
+        await fetch("/api/command/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ run_id: run.id }),
+        });
+        await loadCommandRuns();
+      });
+      item.append(cancel);
+    }
+    commandRuns.append(item);
+  }
+}
+
+async function loadCommandRuns() {
+  try {
+    const response = await fetch("/api/command/status", { cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not load classification runs");
+    renderCommandRuns(result.runs || []);
+  } catch (error) {
+    commandRuns.textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function startCommandRun(event) {
+  event.preventDefault();
+  commandStatus.textContent = "Creating durable run…";
+  commandStatus.classList.remove("error");
+  try {
+    const response = await fetch("/api/command/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(commandPayload()),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not start run");
+    commandStatus.textContent = `Run ${result.id} queued with ${result.queued_email_count} emails. It will continue if you leave this page.`;
+    await loadCommandRuns();
+  } catch (error) {
+    commandStatus.textContent = error instanceof Error ? error.message : String(error);
+    commandStatus.classList.add("error");
   }
 }
 
@@ -651,6 +771,10 @@ async function initialize() {
     document.querySelector("#refreshBenchmark").addEventListener("click", () => void loadBenchmark());
     benchmarkFilter.addEventListener("change", renderBenchmarkRows);
     benchmarkScope.addEventListener("change", () => void loadBenchmark());
+    document.querySelector("#refreshCommand").addEventListener("click", () => void loadCommandRuns());
+    document.querySelector("#previewCommand").addEventListener("click", () => void previewCommand());
+    commandScope.addEventListener("change", () => void previewCommand());
+    commandForm.addEventListener("submit", (event) => void startCommandRun(event));
     document.querySelector("#openResample").addEventListener("click", () => {
       resampleStatus.textContent = "";
       resampleStatus.classList.remove("error");

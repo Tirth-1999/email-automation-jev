@@ -25,14 +25,16 @@ dev = [
 ]
 
 [project.scripts]
+email-automation = "email_automation_jev.commands.dispatch:main"
 email-dashboard = "email_automation_jev.dashboard:main"
-email-gmail-auth = "email_automation_jev.cli:gmail_auth"
-email-ingest = "email_automation_jev.cli:ingest"
-email-inspect = "email_automation_jev.cli:inspect_emails"
-email-sample = "email_automation_jev.cli:sample_emails"
-email-jev-prepare = "email_automation_jev.cli:prepare_jev_eval"
-email-jev-evaluate = "email_automation_jev.cli:evaluate_jev"
-email-phase5-bootstrap = "email_automation_jev.cli:bootstrap_classification_data"
+email-gmail-auth = "email_automation_jev.commands.gmail:authorize"
+email-ingest = "email_automation_jev.commands.gmail:ingest"
+email-inspect = "email_automation_jev.commands.gmail:inspect"
+email-sample = "email_automation_jev.commands.labeling:sample"
+email-jev-prepare = "email_automation_jev.commands.evaluation:prepare"
+email-jev-evaluate = "email_automation_jev.commands.evaluation:evaluate"
+email-phase5-bootstrap = "email_automation_jev.commands.storage:bootstrap"
+email-phase6-classify = "email_automation_jev.commands.classify:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/email_automation_jev"]
@@ -54,6 +56,7 @@ module = [
   "email_automation_jev.labeling_store",
   "email_automation_jev.dashboard",
   "email_automation_jev.cli",
+  "email_automation_jev.classification_worker",
 ]
 ignore_errors = true
 
