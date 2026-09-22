@@ -1,0 +1,13 @@
+.env
+.env.local
+.env.*.local
+.gmail-token.json
+.vscode/
+data/labeling/generated/
+node_modules/
+.next/
+coverage/
+dist/
+*.tsbuildinfo
+*.log
+.DS_Store
