@@ -22,7 +22,7 @@ Build a dependable job-email workspace that:
 | 0 | Architecture and implementation plan | Complete; maintained here |
 | 1 | Gmail ingestion and Supabase persistence | Working with paginated full-mailbox ingestion |
 | 2 | Human labeling and evaluation set | Complete for the first 200 emails |
-| 3 | Jev classifier and benchmark | Working; durable production runs remain |
+| 3 | Jev classifier and benchmark | Complete for category ground truth; other judgments remain unscored |
 | 4 | Dashboard shell and UI migration | Complete |
 | 5 | Durable run, result, review, and label storage | Complete |
 | 6 | Classification worker and Command Center | Complete; ready for controlled Phase 7 runs |
@@ -32,6 +32,163 @@ Build a dependable job-email workspace that:
 | 10 | Application grouping, lifecycle, and application board | Not started |
 | 11 | Scheduling, observability, and draft assistance | Not started |
 | 12 | AI data assistant / RAG | Later roadmap |
+
+## Phase command runbook
+
+Run commands from the repository root. Install the locked dependencies once after cloning or pulling changes:
+
+```bash
+npm ci
+```
+
+Keep local credentials in `.env`; use `.env.example` as the variable checklist. Never commit `.env`, `.gmail-token.json`, or files under `data/labeling/generated/`.
+
+### Phase 0 — Architecture
+
+No runtime command. Review this implementation plan and verify the repository before beginning work:
+
+```bash
+git status
+npm run check
+```
+
+### Phase 1 — Gmail ingestion
+
+Apply `supabase/migrations/001_email_ingestion.sql` through the Supabase SQL Editor before the first ingestion.
+
+Authorize Gmail once, then run incremental synchronization during normal use:
+
+```bash
+npm run gmail:auth
+npm run ingest
+```
+
+Discover the complete mailbox or resume a previously interrupted full discovery:
+
+```bash
+npm run ingest:full
+npm run ingest:resume
+```
+
+For a limited test import and a read-only storage check:
+
+```bash
+npm run ingest -- --full --limit=100
+npm run inspect
+```
+
+### Phase 2 — Human labeling
+
+Create the initial private review pool only when it does not already exist, then open the dashboard:
+
+```bash
+npm run sample:emails
+npm run dashboard
+```
+
+Use **Add emails** inside Review Emails for subsequent duplicate-free samples. Do not recreate the pool with `--force` unless intentionally discarding the existing sampling layout.
+
+### Phase 3 — Jev preparation and evaluation
+
+Rebuild the deterministic development/holdout split, run the held-out release benchmark, and optionally run the broader diagnostic benchmark:
+
+```bash
+npm run jev:prepare
+npm run jev:evaluate
+npm run jev:evaluate:all
+```
+
+Inspect both saved reports from **Evaluate Jev**:
+
+```bash
+npm run dashboard
+```
+
+### Phase 4 — Dashboard
+
+Start the unified local workspace and open `http://127.0.0.1:4173`:
+
+```bash
+npm run dashboard
+```
+
+To use another port:
+
+```bash
+LABELING_UI_PORT=4174 npm run dashboard
+```
+
+### Phase 5 — Durable Supabase storage
+
+Apply these migrations in order through the Supabase SQL Editor:
+
+1. `supabase/migrations/002_classification_pipeline.sql`
+2. `supabase/migrations/003_classification_bootstrap_keys.sql`
+
+Then import the existing human labels and register the approved classifier. This command is safe to repeat:
+
+```bash
+npm run phase5:bootstrap
+```
+
+### Phase 6 — Classification worker and Command Center
+
+Preview and launch runs from **Command Center**:
+
+```bash
+npm run dashboard
+```
+
+Or run a controlled batch from the terminal:
+
+```bash
+npm run classify -- --scope unclassified --limit 25 --concurrency 3 --batch-size 10
+```
+
+Resume only the queued rows of an interrupted run:
+
+```bash
+npm run classify -- --run-id RUN_UUID
+```
+
+Show every supported worker option without starting a run:
+
+```bash
+npm run classify -- --help
+```
+
+### Phase 7 — Controlled production validation
+
+Phase 7 uses the existing commands in this order; inspect results in the dashboard after every classification step:
+
+```bash
+npm run jev:prepare
+npm run jev:evaluate
+npm run phase5:bootstrap
+npm run classify -- --scope unclassified --limit 25 --concurrency 3 --batch-size 10
+npm run classify -- --scope unclassified --limit 200 --concurrency 5 --batch-size 25
+npm run dashboard
+```
+
+Do not start the unrestricted mailbox run until the 25- and 200-email runs have been reconciled. When approved, omit `--limit`:
+
+```bash
+npm run classify -- --scope unclassified --concurrency 5 --batch-size 25
+```
+
+### Phases 8–12 — Future work
+
+These phases do not have runnable commands yet. Add commands here only after their implementation and acceptance checks exist; do not document placeholder commands as if they work.
+
+### Validation after any implemented phase
+
+```bash
+npm run typecheck
+npm test
+npm run check
+```
+
+`npm run check` runs both TypeScript validation and the complete automated test suite, so it is the final pre-commit check.
 
 ## Architecture decisions
 
