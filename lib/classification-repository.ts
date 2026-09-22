@@ -109,19 +109,30 @@ export async function markClassificationRunning(
   database: DatabaseClient,
   runId: string,
   emailId: string,
-): Promise<void> {
-  const { error } = await database
+): Promise<boolean> {
+  const current = await database
+    .from("email_classification_results")
+    .select("attempt_count")
+    .eq("run_id", runId)
+    .eq("email_id", emailId)
+    .eq("status", "queued")
+    .maybeSingle();
+  assertNoError(current.error, "Could not inspect queued classification");
+  if (!current.data) return false;
+  const { data, error } = await database
     .from("email_classification_results")
     .update({
       status: "running",
       started_at: new Date().toISOString(),
-      attempt_count: 1,
+      attempt_count: Number((current.data as { attempt_count: number }).attempt_count || 0) + 1,
       error_message: null,
     })
     .eq("run_id", runId)
     .eq("email_id", emailId)
-    .eq("status", "queued");
+    .eq("status", "queued")
+    .select("id");
   assertNoError(error, "Could not mark classification as running");
+  return Boolean(data?.length);
 }
 
 export async function saveClassificationResult(
@@ -164,17 +175,24 @@ export async function failClassificationResult(
   emailId: string,
   error: unknown,
 ): Promise<void> {
+  const errorMessage = sanitizedClassificationError(error);
   const { error: databaseError } = await database
     .from("email_classification_results")
     .update({
       status: "failed",
-      error_message: sanitizedClassificationError(error),
+      error_message: errorMessage,
       classified_at: new Date().toISOString(),
     })
     .eq("run_id", runId)
     .eq("email_id", emailId)
     .eq("status", "running");
   assertNoError(databaseError, "Could not record classification failure");
+  const runResult = await database
+    .from("classification_runs")
+    .update({ error_message: errorMessage })
+    .eq("id", runId)
+    .eq("status", "running");
+  assertNoError(runResult.error, "Could not record the latest classification error");
 }
 
 export async function refreshClassificationRunCounters(
@@ -197,6 +215,99 @@ export async function requestClassificationCancellation(
     .eq("id", runId)
     .in("status", ["queued", "running"]);
   assertNoError(error, "Could not request classification cancellation");
+}
+
+export async function getClassificationRun(
+  database: DatabaseClient,
+  runId: string,
+): Promise<ClassificationRunRow> {
+  const { data, error } = await database
+    .from("classification_runs")
+    .select("*")
+    .eq("id", runId)
+    .single();
+  assertNoError(error, "Could not load classification run");
+  return data as ClassificationRunRow;
+}
+
+export async function listRecentClassificationRuns(
+  database: DatabaseClient,
+  limit = 20,
+): Promise<ClassificationRunRow[]> {
+  const { data, error } = await database
+    .from("classification_run_summary")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  assertNoError(error, "Could not load classification runs");
+  return (data || []) as ClassificationRunRow[];
+}
+
+export async function listQueuedClassificationEmailIds(
+  database: DatabaseClient,
+  runId: string,
+): Promise<string[]> {
+  const result: string[] = [];
+  const pageSize = 1_000;
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await database
+      .from("email_classification_results")
+      .select("email_id")
+      .eq("run_id", runId)
+      .eq("status", "queued")
+      .order("created_at")
+      .range(offset, offset + pageSize - 1);
+    assertNoError(error, "Could not load queued classification emails");
+    const rows = (data || []) as Array<{ email_id: string }>;
+    result.push(...rows.map((row) => row.email_id));
+    if (rows.length < pageSize) return result;
+  }
+}
+
+export async function startClassificationRun(
+  database: DatabaseClient,
+  runId: string,
+): Promise<void> {
+  const current = await getClassificationRun(database, runId);
+  if (current.status === "succeeded") {
+    throw new Error(`Classification run ${runId} is already terminal (${current.status})`);
+  }
+  const requeue = await database
+    .from("email_classification_results")
+    .update({ status: "queued", started_at: null })
+    .eq("run_id", runId)
+    .eq("status", "running");
+  assertNoError(requeue.error, "Could not requeue interrupted classifications");
+  const { error } = await database
+    .from("classification_runs")
+    .update({
+      status: "running",
+      started_at: current.started_at || new Date().toISOString(),
+      finished_at: null,
+      cancellation_requested_at: null,
+      error_message: null,
+    })
+    .eq("id", runId)
+    .in("status", ["queued", "running", "partial", "failed", "cancelled"]);
+  assertNoError(error, "Could not start classification run");
+}
+
+export async function finishClassificationRun(
+  database: DatabaseClient,
+  runId: string,
+  status: ClassificationRunRow["status"],
+  errorMessage: string | null = null,
+): Promise<void> {
+  const { error } = await database
+    .from("classification_runs")
+    .update({
+      status,
+      finished_at: new Date().toISOString(),
+      error_message: errorMessage ? sanitizedClassificationError(errorMessage) : null,
+    })
+    .eq("id", runId);
+  assertNoError(error, "Could not finish classification run");
+  await refreshClassificationRunCounters(database, runId);
 }
 
 export async function appendHumanLabelEvent(

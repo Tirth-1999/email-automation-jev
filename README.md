@@ -8,7 +8,7 @@ This repository is intentionally being built one phase at a time. The current so
 
 ## Current status
 
-**Gmail ingestion, the 200-email human dataset, Jev v4 evaluation, the dashboard shell, and the durable Supabase classification schema are complete. The resumable production worker and Command Center are next.**
+**Gmail ingestion, the 200-email human dataset, Jev v4 evaluation, the durable Supabase schema, and the resumable Phase 6 production worker with Command Center are complete. Phase 7 is the controlled mailbox-wide validation run.**
 
 - Why Supabase Postgres
 
@@ -110,6 +110,26 @@ npm run phase5:bootstrap
 ```
 
 The bootstrap is idempotent. Repeating it imports zero duplicate labels. It stores the benchmark summary but does not upload the private per-email benchmark result bodies.
+
+## Production classification
+
+The Phase 6 worker freezes selected email IDs into a durable run before making Jev calls. It processes bounded batches with concurrency limits, uses the TypeSafe SDK's retry and `Retry-After` behavior, saves each result immediately, isolates per-email failures, and preserves queued work for resume after cancellation or interruption.
+
+Start with a controlled batch:
+
+```bash
+npm run classify -- --scope unclassified --limit 25 --concurrency 3 --batch-size 10
+```
+
+Resume an interrupted run without selecting new emails:
+
+```bash
+npm run classify -- --run-id RUN_UUID
+```
+
+Scopes are `unclassified`, `all`, `uncertain`, and `failed`. Optional `--after` and `--before` ISO timestamps restrict the selection window. Run `npm run dashboard`, open **Command Center**, and preview before starting. The UI polls durable progress, displays result counts and throughput, and supports cancellation and resume.
+
+Closing the browser does not stop a run. If the Node server or CLI process stops, use `--run-id` or the Command Center resume action to continue its remaining queued rows.
 
 ## Message identity
 

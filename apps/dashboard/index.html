@@ -127,6 +127,37 @@
         </section>
       </main>
 
+      <main id="commandView" class="command-view" hidden>
+        <section class="command-heading">
+          <div>
+            <p class="eyebrow">Phase 6 · Operations</p>
+            <h2>Classification Command Center</h2>
+            <p>Create a durable Jev run, preview its frozen scope, and monitor progress without keeping the browser request open.</p>
+          </div>
+          <button id="refreshCommand" class="button secondary" type="button">Refresh runs</button>
+        </section>
+        <section class="command-grid">
+          <form id="commandForm" class="command-panel">
+            <div class="panel-heading"><h3>New production run</h3><span>Jev v4</span></div>
+            <label><span>Scope</span><select id="commandScope"><option value="unclassified">Unclassified emails</option><option value="all">All active emails</option><option value="uncertain">Uncertain results</option><option value="failed">Failed results</option></select></label>
+            <label><span>Maximum emails <small>optional</small></span><input id="commandMaximum" type="number" min="1" placeholder="All selected emails" /></label>
+            <div class="command-fields date-fields">
+              <label><span>From date <small>optional</small></span><input id="commandAfter" type="date" /></label>
+              <label><span>Through date <small>optional</small></span><input id="commandBefore" type="date" /></label>
+            </div>
+            <div class="command-fields">
+              <label><span>Confidence threshold</span><input id="commandThreshold" type="number" min="0" max="1" step="0.01" value="0.6" /></label>
+              <label><span>Concurrency</span><input id="commandConcurrency" type="number" min="1" max="10" value="5" /></label>
+              <label><span>Batch size</span><input id="commandBatchSize" type="number" min="1" max="250" value="25" /></label>
+            </div>
+            <div id="commandPreview" class="command-preview">Choose a scope and preview the frozen work set.</div>
+            <div class="dialog-actions"><button id="previewCommand" class="button secondary" type="button">Preview</button><button class="button primary" type="submit">Start run</button></div>
+            <p id="commandStatus" class="resample-status" aria-live="polite"></p>
+          </form>
+          <section class="command-panel"><div class="panel-heading"><h3>Recent runs</h3><span id="commandRunCount"></span></div><div id="commandRuns" class="command-runs"></div></section>
+        </section>
+      </main>
+
       <main id="placeholderView" class="workspace-view" hidden>
         <section class="workspace-placeholder">
           <span id="placeholderPhase" class="phase-badge"></span>

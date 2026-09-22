@@ -20,6 +20,20 @@ import {
 } from "../../lib/labeling-store.js";
 import { createDatabaseClient } from "../../lib/repository.js";
 import { CLASSIFIER_VERSION, JEV_CATEGORIES } from "../../lib/jev-classifier.js";
+import {
+  createProductionClassificationRun,
+  previewClassificationSelection,
+  RUN_SCOPES,
+  runClassification,
+  validateClassificationConfig,
+  type ClassificationWorkerConfig,
+  type RunScope,
+} from "../../lib/classification-worker.js";
+import {
+  getClassificationRun,
+  listRecentClassificationRuns,
+  requestClassificationCancellation,
+} from "../../lib/classification-repository.js";
 
 const port = Number.parseInt(process.env.LABELING_UI_PORT || "4173", 10);
 const projectRoot = process.cwd();
@@ -70,6 +84,7 @@ const database = createDatabaseClient(
 );
 let emailCache: LabelingEmail[] | null = null;
 let mutationQueue: Promise<unknown> = Promise.resolve();
+const activeClassificationRuns = new Map<string, Promise<void>>();
 
 function json(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, {
@@ -113,6 +128,45 @@ function serializeMutation<T>(operation: () => Promise<T>): Promise<T> {
     () => undefined,
   );
   return result;
+}
+
+async function primaryAccountId(): Promise<string> {
+  const { data, error } = await database
+    .from("gmail_accounts")
+    .select("id")
+    .order("created_at")
+    .limit(1);
+  if (error) throw new Error(`Could not load Gmail account: ${error.message}`);
+  const account = (data || [])[0] as { id: string } | undefined;
+  if (!account) throw new Error("No Gmail account is registered. Run ingestion first.");
+  return account.id;
+}
+
+function workerConfig(input: Record<string, unknown>): ClassificationWorkerConfig {
+  const config = {
+    model:
+      typeof input.model === "string" && input.model.trim()
+        ? input.model.trim()
+        : process.env.TYPESAFE_MODEL?.trim() || "jev-1.13.0",
+    minimumTopProbability:
+      typeof input.minimum_top_probability === "number"
+        ? input.minimum_top_probability
+        : Number(process.env.JEV_MIN_TOP_PROBABILITY || "0.6"),
+    concurrency: typeof input.concurrency === "number" ? input.concurrency : 5,
+    batchSize: typeof input.batch_size === "number" ? input.batch_size : 25,
+    maxRetries: 6,
+  };
+  validateClassificationConfig(config);
+  return config;
+}
+
+function startBackgroundClassification(runId: string, config: ClassificationWorkerConfig): void {
+  if (activeClassificationRuns.has(runId)) return;
+  const task = runClassification(database, runId, config)
+    .then(() => undefined)
+    .catch((error: unknown) => console.error(`Classification run ${runId} failed:`, error))
+    .finally(() => activeClassificationRuns.delete(runId));
+  activeClassificationRuns.set(runId, task);
 }
 
 async function saveLabel(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -197,6 +251,92 @@ async function addSample(request: IncomingMessage, response: ServerResponse): Pr
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const requestUrl = new URL(request.url || "/", `http://${request.headers.host}`);
   const path = requestUrl.pathname;
+  if (request.method === "GET" && path === "/api/command/preview") {
+    const scopeValue = requestUrl.searchParams.get("scope") || "unclassified";
+    if (!RUN_SCOPES.includes(scopeValue as RunScope)) {
+      json(response, 400, { error: `scope must be one of: ${RUN_SCOPES.join(", ")}` });
+      return;
+    }
+    const maximumValue = requestUrl.searchParams.get("maximum");
+    const batchSizeValue = requestUrl.searchParams.get("batch_size");
+    const preview = await previewClassificationSelection(
+      database,
+      await primaryAccountId(),
+      {
+        scope: scopeValue as RunScope,
+        maximum: maximumValue ? Number(maximumValue) : null,
+        after: requestUrl.searchParams.get("after"),
+        before: requestUrl.searchParams.get("before"),
+      },
+      batchSizeValue ? Number(batchSizeValue) : 25,
+    );
+    json(response, 200, preview);
+    return;
+  }
+  if (request.method === "GET" && path === "/api/command/status") {
+    json(response, 200, { runs: await listRecentClassificationRuns(database) });
+    return;
+  }
+  if (request.method === "POST" && path === "/api/command/runs") {
+    const input = await body(request);
+    const scopeValue = typeof input.scope === "string" ? input.scope : "unclassified";
+    if (!RUN_SCOPES.includes(scopeValue as RunScope)) {
+      json(response, 400, { error: `scope must be one of: ${RUN_SCOPES.join(", ")}` });
+      return;
+    }
+    if (!process.env.TYPESAFE_API_KEY?.trim() || process.env.TYPESAFE_API_KEY === "replace_me") {
+      json(response, 400, { error: "Set TYPESAFE_API_KEY before starting a classification run" });
+      return;
+    }
+    const config = workerConfig(input);
+    const created = await createProductionClassificationRun(
+      database,
+      await primaryAccountId(),
+      {
+        scope: scopeValue as RunScope,
+        maximum: typeof input.maximum === "number" ? input.maximum : null,
+        after: typeof input.after === "string" ? input.after : null,
+        before: typeof input.before === "string" ? input.before : null,
+      },
+      config,
+    );
+    setImmediate(() => startBackgroundClassification(created.run.id, config));
+    json(response, 202, { ...created.run, queued_email_count: created.queuedEmailCount });
+    return;
+  }
+  if (request.method === "POST" && path === "/api/command/cancel") {
+    const input = await body(request);
+    const runId = typeof input.run_id === "string" ? input.run_id : "";
+    if (!runId) {
+      json(response, 400, { error: "run_id is required" });
+      return;
+    }
+    await requestClassificationCancellation(database, runId);
+    json(response, 202, { run_id: runId, cancellation_requested: true });
+    return;
+  }
+  if (request.method === "POST" && path === "/api/command/resume") {
+    const input = await body(request);
+    const runId = typeof input.run_id === "string" ? input.run_id : "";
+    if (!runId) {
+      json(response, 400, { error: "run_id is required" });
+      return;
+    }
+    if (!process.env.TYPESAFE_API_KEY?.trim() || process.env.TYPESAFE_API_KEY === "replace_me") {
+      json(response, 400, { error: "Set TYPESAFE_API_KEY before resuming a classification run" });
+      return;
+    }
+    const run = await getClassificationRun(database, runId);
+    const config = workerConfig({
+      model: run.model_requested,
+      minimum_top_probability: Number(run.minimum_top_probability),
+      concurrency: run.concurrency,
+      batch_size: run.batch_size,
+    });
+    setImmediate(() => startBackgroundClassification(runId, config));
+    json(response, 202, { run_id: runId, resumed: true });
+    return;
+  }
   if (request.method === "GET" && path === "/api/benchmark") {
     const allLabeled = requestUrl.searchParams.get("scope") === "all";
     const selectedBenchmarkPath = allLabeled ? allLabeledBenchmarkPath : benchmarkPath;

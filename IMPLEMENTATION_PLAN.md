@@ -25,7 +25,7 @@ Build a dependable job-email workspace that:
 | 3 | Jev classifier and benchmark | Working; durable production runs remain |
 | 4 | Dashboard shell and UI migration | Complete |
 | 5 | Durable run, result, review, and label storage | Complete |
-| 6 | Classification worker and Command Center | Not started |
+| 6 | Classification worker and Command Center | Complete; ready for controlled Phase 7 runs |
 | 7 | Full-dataset validation and production classification | Not started |
 | 8 | Correction and optional LLM-review workflow | Not started |
 | 9 | Email Board and analytics | Not started |
@@ -282,6 +282,8 @@ Records exact question configuration, composition policy, source dataset/referen
 
 ## Phase 6 — Classification worker and Command Center
 
+Status: complete. The TypeScript CLI and dashboard use the same durable worker. No new mailbox-wide run was started as part of implementation.
+
 ### Batch-processing contract
 
 1. Create a classification run.
@@ -310,6 +312,40 @@ Initial measured defaults: concurrency `5`, batch size `25`, maximum concurrency
 - skip existing results or deliberately reprocess.
 
 A count-only preview shows selected, previously classified, to-process, and estimated batch counts. Live progress shows queued, processed, succeeded, failed, uncertain, elapsed time, throughput, approximate remaining time, classifier version, and latest sanitized error. Cancellation stops scheduling new batches and preserves completed results.
+
+### Implemented
+
+- Email IDs are selected once and inserted as queued result rows before inference starts.
+- Scope supports all, unclassified, uncertain, failed, date-bounded, maximum-count, and explicit email selections.
+- Concurrency is limited to 1–10, batch size to 1–250, and SDK retries to 0–6.
+- TypeSafe handles retryable connection, timeout, rate-limit, and server responses with exponential backoff, jitter, and `Retry-After` support.
+- Each successful or failed email is persisted immediately; aggregate counters refresh after every batch.
+- Cancellation is durable and checked before scheduling the next batch.
+- Cancelled, partial, failed-with-queued-work, and interrupted running batches can resume without selecting new email IDs.
+- The CLI supports new and resumed runs through `npm run classify`.
+- Command Center supports count-only preview, configuration, start, five-second progress polling, cancellation, and resume.
+
+### Controlled first run
+
+```bash
+npm run classify -- --scope unclassified --limit 25 --concurrency 3 --batch-size 10
+```
+
+Inspect the durable result set in Command Center before increasing the limit. Resume an interrupted run with:
+
+```bash
+npm run classify -- --run-id RUN_UUID
+```
+
+### Acceptance criteria
+
+- [x] A run freezes selected email IDs before classification starts.
+- [x] Four Jev judgments are sent together for each email.
+- [x] Concurrency, batching, retries, partial failure, and cancellation are bounded and persisted.
+- [x] Completed results are written immediately and remain immutable.
+- [x] Run counters and progress are visible through the Command Center.
+- [x] Queued work can resume without re-enqueuing completed results.
+- [x] CLI, server, worker, browser JavaScript, type checks, and automated tests pass.
 
 ---
 
@@ -449,10 +485,9 @@ The duplicate dashboard plan and superseded labeling UI/server were removed afte
 
 ## Delivery order from here
 
-1. **Next:** Phase 6, resumable classification worker and Command Center.
-2. Phase 7, frozen dataset validation, benchmark approval, and staged mailbox run.
-3. Phase 8, corrections and optional OpenAI review.
-4. Phase 9, Email Board and analytics.
-5. Later phases only after their prerequisites pass.
+1. **Next:** Phase 7, frozen dataset validation, benchmark approval, and staged mailbox run.
+2. Phase 8, corrections and optional OpenAI review.
+3. Phase 9, Email Board and analytics.
+4. Later phases only after their prerequisites pass.
 
 For every phase: confirm scope, implement, run automated checks, verify acceptance criteria together, update this plan, and only then begin the next phase.
