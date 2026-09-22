@@ -16,6 +16,7 @@
     "jev:prepare": "tsx scripts/prepare-jev-eval.ts",
     "jev:evaluate": "tsx scripts/evaluate-jev.ts",
     "jev:evaluate:all": "tsx scripts/evaluate-jev.ts --all-labeled",
+    "phase5:bootstrap": "tsx scripts/bootstrap-classification-data.ts",
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test"

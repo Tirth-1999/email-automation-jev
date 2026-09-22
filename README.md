@@ -8,7 +8,7 @@ This repository is intentionally being built one phase at a time. The current so
 
 ## Current status
 
-**Gmail ingestion, the first 200-email human-labeled dataset, Jev v4 evaluation, and the unified dashboard shell are working. Durable Supabase classification runs are next.**
+**Gmail ingestion, the 200-email human dataset, Jev v4 evaluation, the dashboard shell, and the durable Supabase classification schema are complete. The resumable production worker and Command Center are next.**
 
 - Why Supabase Postgres
 
@@ -98,6 +98,18 @@ This larger result is diagnostic rather than a clean generalization estimate bec
 The evaluator imports the same classifier function and question configuration that production will call. It records the returned model version, full probability distributions, confidence, raw accuracy, automatic coverage, automatic-only accuracy, per-category results, and token usage. Run `npm run dashboard` and open **Evaluate Jev** to inspect the report. Saved results from an older classifier version are marked stale rather than mixed with the current benchmark.
 
 The existing 200 human labels define email-category ground truth only. Therefore, the benchmark scores the category Choice and clearly displays next-action, urgency, and draft-needed outputs as unscored. Those fields need separate human labels before their accuracy can be claimed. The single offer example remains in development, so the first held-out report cannot measure offer accuracy.
+
+## Durable classification data
+
+Phase 5 adds versioned classifier records, frozen classification runs, immutable per-email results, append-only human-label history, review cases, and read views for the dashboard. Browser roles have no direct access; server code uses the Supabase service role.
+
+After applying migrations `002` and `003`, import the existing private labels and register the current benchmarked classifier with:
+
+```bash
+npm run phase5:bootstrap
+```
+
+The bootstrap is idempotent. Repeating it imports zero duplicate labels. It stores the benchmark summary but does not upload the private per-email benchmark result bodies.
 
 ## Message identity
 

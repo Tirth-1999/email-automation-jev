@@ -24,7 +24,7 @@ Build a dependable job-email workspace that:
 | 2 | Human labeling and evaluation set | Complete for the first 200 emails |
 | 3 | Jev classifier and benchmark | Working; durable production runs remain |
 | 4 | Dashboard shell and UI migration | Complete |
-| 5 | Durable run, result, review, and label storage | Not started |
+| 5 | Durable run, result, review, and label storage | Complete |
 | 6 | Classification worker and Command Center | Not started |
 | 7 | Full-dataset validation and production classification | Not started |
 | 8 | Correction and optional LLM-review workflow | Not started |
@@ -227,6 +227,8 @@ The all-label run is diagnostic because it includes development examples. Only t
 
 ## Phase 5 — Durable classification, label, and review schema
 
+Status: complete — migrations are live in Supabase, all 200 existing human labels are imported, and Jev v4 is registered as an approved classifier version.
+
 ### `classification_runs`
 
 One row per benchmark, diagnostic, production, or reprocessing batch. It stores mailbox, status, classifier/model version, selection rules, frozen total count, progress counters, confidence threshold, concurrency, batch size, timestamps, and sanitized run errors.
@@ -264,6 +266,17 @@ Records exact question configuration, composition policy, source dataset/referen
 - Service-role and provider API keys are never sent to browser code.
 - Row-level security is enabled before remote multi-user access.
 - Email bodies are not written into logs or generic error fields.
+
+### Acceptance criteria
+
+- [x] Classification runs and per-email results have durable, constrained schemas.
+- [x] Completed classification results cannot be edited in place.
+- [x] Human-label corrections are append-only and idempotently importable.
+- [x] Review cases can preserve Jev and future LLM evidence separately.
+- [x] Latest-classification, latest-human-label, run-summary, and email-board views exist.
+- [x] RLS blocks browser roles; the server service role has the required access.
+- [x] The 200-label bootstrap is repeatable and creates no duplicates.
+- [x] The approved Jev v4 record stores benchmark summary and dataset version.
 
 ---
 
@@ -436,11 +449,10 @@ The duplicate dashboard plan and superseded labeling UI/server were removed afte
 
 ## Delivery order from here
 
-1. **Next:** Phase 5, durable Supabase schema and repository methods.
-2. Phase 6, resumable classification worker and Command Center.
-3. Phase 7, frozen dataset validation, benchmark approval, and staged mailbox run.
-4. Phase 8, corrections and optional OpenAI review.
-5. Phase 9, Email Board and analytics.
-6. Later phases only after their prerequisites pass.
+1. **Next:** Phase 6, resumable classification worker and Command Center.
+2. Phase 7, frozen dataset validation, benchmark approval, and staged mailbox run.
+3. Phase 8, corrections and optional OpenAI review.
+4. Phase 9, Email Board and analytics.
+5. Later phases only after their prerequisites pass.
 
 For every phase: confirm scope, implement, run automated checks, verify acceptance criteria together, update this plan, and only then begin the next phase.
