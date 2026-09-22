@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Email Automation Jev</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app" aria-busy="true">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Job email workspace</p>
+          <h1>Email Automation Jev</h1>
+        </div>
+        <nav class="view-switch" role="tablist" aria-label="Workspace view">
+          <button class="view-tab" data-view="command" type="button" role="tab" aria-selected="false">Command Center</button>
+          <button id="showReview" class="view-tab active" data-view="review" type="button" role="tab" aria-selected="true">Review Emails</button>
+          <button id="showBenchmark" class="view-tab" data-view="benchmark" type="button" role="tab" aria-selected="false">Evaluate Jev</button>
+          <button class="view-tab" data-view="board" type="button" role="tab" aria-selected="false">Email Board</button>
+          <button class="view-tab" data-view="analytics" type="button" role="tab" aria-selected="false">Analytics</button>
+          <button class="view-tab" data-view="assistant" type="button" role="tab" aria-selected="false">AI Assistant</button>
+        </nav>
+        <div class="top-actions">
+          <button id="openResample" class="button add" type="button">Add emails</button>
+          <button id="exportCsv" class="button secondary" type="button">Export CSV</button>
+          <button id="exportJson" class="button primary" type="button">Export JSON</button>
+        </div>
+      </header>
+
+      <aside id="reviewSidebar" class="sidebar">
+        <label class="search">
+          <span>Search emails</span>
+          <input id="searchInput" type="search" placeholder="Subject, sender, body…" />
+        </label>
+        <div class="filters" role="group" aria-label="Email filters">
+          <button class="filter active" type="button" data-filter="all">All</button>
+          <button class="filter" type="button" data-filter="unreviewed">Unreviewed</button>
+          <button class="filter" type="button" data-filter="atc">ATC</button>
+        </div>
+        <div id="emailList" class="email-list" aria-label="Sample emails"></div>
+      </aside>
+
+      <main id="reviewReader" class="reader">
+        <div class="reader-toolbar">
+          <button id="previousEmail" class="icon-button" type="button" aria-label="Previous email">←</button>
+          <span id="positionText">Email 1 of 150</span>
+          <button id="nextEmail" class="icon-button" type="button" aria-label="Next email">→</button>
+          <button id="nextUnreviewed" class="button quiet" type="button">Next unreviewed</button>
+        </div>
+
+        <section class="message-header">
+          <div id="badges" class="badges"></div>
+          <h2 id="subject">Loading…</h2>
+          <div class="message-meta">
+            <div><span>From</span><strong id="sender"></strong></div>
+            <div><span>Date</span><strong id="date"></strong></div>
+          </div>
+          <a id="gmailLink" class="gmail-link" target="_blank" rel="noreferrer">Open original in Gmail ↗</a>
+        </section>
+
+        <section class="message-content">
+          <div class="snippet-block">
+            <span>Snippet</span>
+            <p id="snippet"></p>
+          </div>
+          <article id="emailBody" class="email-body"></article>
+        </section>
+      </main>
+
+      <aside id="reviewClassifier" class="classifier">
+        <div>
+          <p class="eyebrow">Manual category</p>
+          <h2>Choose email category</h2>
+          <p class="keyboard-help">Press keys 1–8 to label and move forward.</p>
+        </div>
+        <div id="categoryButtons" class="category-buttons"></div>
+        <label class="notes-label">
+          <span>Review notes <small>optional</small></span>
+          <textarea id="reviewNotes" rows="5" placeholder="Why is this ambiguous?"></textarea>
+        </label>
+        <div id="categoryCounts" class="category-counts"></div>
+      </aside>
+
+      <main id="benchmarkView" class="benchmark-view" hidden>
+        <section class="benchmark-heading">
+          <div>
+            <p class="eyebrow">Category evaluation</p>
+            <h2>Human category vs Jev</h2>
+            <p>The email category is scored against your labels. Next action, urgency, and draft-needed decisions are visible but remain unscored until you label those fields too.</p>
+          </div>
+          <div class="benchmark-controls">
+            <label>
+              <span>Dataset</span>
+              <select id="benchmarkScope">
+                <option value="heldout">Held-out 39</option>
+                <option value="all">All labeled 199</option>
+              </select>
+            </label>
+            <button id="refreshBenchmark" class="button secondary" type="button">Refresh results</button>
+          </div>
+        </section>
+        <div id="benchmarkEmpty" class="benchmark-empty" hidden></div>
+        <section id="benchmarkContent" hidden>
+          <div id="benchmarkCards" class="benchmark-cards"></div>
+          <div class="benchmark-grid">
+            <section class="benchmark-panel">
+              <div class="panel-heading">
+                <h3>Raw category performance</h3>
+                <span id="benchmarkModel"></span>
+              </div>
+              <div id="categoryPerformance" class="performance-list"></div>
+            </section>
+            <section class="benchmark-panel">
+              <div class="panel-heading">
+                <h3>Evaluation emails</h3>
+                <select id="benchmarkFilter" aria-label="Filter benchmark results">
+                  <option value="all">All</option>
+                  <option value="incorrect">Incorrect</option>
+                  <option value="uncertain">Uncertain</option>
+                  <option value="correct">Correct</option>
+                </select>
+              </div>
+              <div id="benchmarkRows" class="benchmark-rows"></div>
+            </section>
+          </div>
+        </section>
+      </main>
+
+      <main id="placeholderView" class="workspace-view" hidden>
+        <section class="workspace-placeholder">
+          <span id="placeholderPhase" class="phase-badge"></span>
+          <p id="placeholderEyebrow" class="eyebrow"></p>
+          <h2 id="placeholderTitle"></h2>
+          <p id="placeholderDescription"></p>
+          <div id="placeholderFeatures" class="placeholder-features"></div>
+        </section>
+      </main>
+
+      <footer class="progress-block" aria-live="polite">
+        <div class="progress-copy">
+          <strong id="progressText">0 / 150 reviewed</strong>
+          <span id="saveStatus">Loading sample…</span>
+        </div>
+        <div class="progress-track"><span id="progressBar"></span></div>
+      </footer>
+    </div>
+
+    <div id="errorState" class="error-state" hidden>
+      <h1>Could not load the labeling sample</h1>
+      <p id="errorMessage"></p>
+    </div>
+
+    <dialog id="resampleDialog" class="resample-dialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Unique resampling</p>
+            <h2>Add emails to the review pool</h2>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        </div>
+        <p class="dialog-copy">Already sampled emails are excluded. Existing labels remain in the cumulative labeled JSON.</p>
+        <label>
+          <span>Emails to add</span>
+          <select id="resampleCount">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="150">150</option>
+          </select>
+        </label>
+        <label>
+          <span>Sampling mode</span>
+          <select id="resampleStrategy">
+            <option value="balanced" selected>Balanced discovery</option>
+            <option value="random">Fully random</option>
+          </select>
+          <small>Balanced discovery favors reply/action, interview, assessment, offer, rejection, and outgoing signals.</small>
+        </label>
+        <p id="resampleStatus" class="resample-status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button class="button secondary" value="cancel">Cancel</button>
+          <button id="confirmResample" class="button primary" type="button">Add unique emails</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>
