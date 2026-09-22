@@ -25,6 +25,7 @@ Build a dependable job-email workspace that:
 | 3 | Jev classifier and benchmark | Working; durable production runs remain |
 | 4 | Dashboard shell and UI migration | Complete |
 | 5 | Durable run, result, review, and label storage | Complete |
+| 5.5 | Python migration and TypeScript retirement | Complete |
 | 6 | Classification worker and Command Center | Not started |
 | 7 | Full-dataset validation and production classification | Not started |
 | 8 | Correction and optional LLM-review workflow | Not started |
@@ -72,7 +73,7 @@ Command Center owns operations. Other tabs consume durable results and never hid
 
 ## Target project layout
 
-The current working UI will be migrated without a rewrite:
+The dashboard remains framework-free, while all server-side and command-line code is Python:
 
 ```text
 apps/
@@ -94,13 +95,13 @@ apps/
         email-reader.js
         run-progress.js
         result-card.js
-  server/
-    index.ts
-    routes/
-    workers/
-      classify-emails.ts
-lib/                             # shared Gmail, Jev, database, and domain logic
-scripts/                         # thin CLI entry points using shared logic
+src/email_automation_jev/
+  dashboard.py                   # local dashboard API and static-file server
+  cli.py                         # thin command entry points
+  ingestion.py                   # Gmail synchronization workflow
+  jev_classifier.py              # shared production/evaluation classifier
+  repository.py                  # Supabase persistence
+tests/                           # pytest behavior tests
 supabase/migrations/
 ```
 
@@ -277,6 +278,22 @@ Records exact question configuration, composition policy, source dataset/referen
 - [x] RLS blocks browser roles; the server service role has the required access.
 - [x] The 200-label bootstrap is repeatable and creates no duplicates.
 - [x] The approved Jev v4 record stores benchmark summary and dataset version.
+
+---
+
+## Phase 5.5 — Python migration
+
+Status: complete. All Gmail, Supabase, Jev, sampling, evaluation, dashboard-server, and CLI logic uses Python 3.11+ with a conventional `src/` package. `uv.lock` freezes dependencies, Ruff checks formatting and common defects, and pytest verifies the core behavior. Existing SQL migrations and private data formats are unchanged, so the migration does not require re-ingestion, re-labeling, or a database migration.
+
+The browser dashboard intentionally remains plain JavaScript because browsers execute JavaScript directly. It contains presentation and interaction code only; the system logic the user needs to understand and explain is Python.
+
+### Acceptance criteria
+
+- [x] Every former TypeScript server/CLI capability has a Python entry point.
+- [x] Gmail pagination, incremental history, retry, parsing, and sampling behavior is covered by Python tests.
+- [x] Jev uses the official Python SDK with the same four judgments and classifier version.
+- [x] Existing Supabase tables, JSON datasets, and dashboard API paths remain compatible.
+- [x] TypeScript sources, Node manifests, and Node dependencies are retired after parity checks.
 
 ---
 

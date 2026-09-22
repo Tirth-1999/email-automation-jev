@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "email-automation-jev"
+version = "0.2.0"
+description = "Gmail ingestion and Jev-powered job email classification"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4>=4.12,<5",
+  "google-api-python-client>=2.160,<3",
+  "google-auth-oauthlib>=1.2,<2",
+  "python-dotenv>=1.0,<2",
+  "supabase>=2.15,<3",
+  "typesafe-sdk>=0.7.1,<0.8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.15,<2",
+  "pytest>=8.3,<9",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+email-dashboard = "email_automation_jev.dashboard:main"
+email-gmail-auth = "email_automation_jev.cli:gmail_auth"
+email-ingest = "email_automation_jev.cli:ingest"
+email-inspect = "email_automation_jev.cli:inspect_emails"
+email-sample = "email_automation_jev.cli:sample_emails"
+email-jev-prepare = "email_automation_jev.cli:prepare_jev_eval"
+email-jev-evaluate = "email_automation_jev.cli:evaluate_jev"
+email-phase5-bootstrap = "email_automation_jev.cli:bootstrap_classification_data"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/email_automation_jev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+ignore_missing_imports = true
+packages = ["email_automation_jev"]
+
+[[tool.mypy.overrides]]
+module = [
+  "email_automation_jev.repository",
+  "email_automation_jev.classification_repository",
+  "email_automation_jev.labeling_store",
+  "email_automation_jev.dashboard",
+  "email_automation_jev.cli",
+]
+ignore_errors = true
+
+[tool.ruff]
+line-length = 160
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

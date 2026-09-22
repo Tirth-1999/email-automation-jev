@@ -8,7 +8,27 @@ This repository is intentionally being built one phase at a time. The current so
 
 ## Current status
 
-**Gmail ingestion, the 200-email human dataset, Jev v4 evaluation, the dashboard shell, and the durable Supabase classification schema are complete. The resumable production worker and Command Center are next.**
+**Gmail ingestion, the 200-email human dataset, Jev v4 evaluation, the dashboard shell, the durable Supabase classification schema, and the Python migration are complete. The resumable production worker and Command Center are next.**
+
+## Python setup
+
+The backend, Gmail integration, Supabase access, Jev pipeline, command-line tools, and tests use Python. The dashboard itself remains plain browser HTML, CSS, and JavaScript—no TypeScript or frontend build step is required.
+
+```bash
+uv sync --extra dev
+uv run pytest
+uv run email-dashboard
+```
+
+Useful commands:
+
+```bash
+uv run email-gmail-auth
+uv run email-ingest
+uv run email-ingest --full --resume
+uv run email-inspect
+uv run email-sample --count 150
+```
 
 - Why Supabase Postgres
 
@@ -69,7 +89,7 @@ Kanban dashboard -> Open original message in Gmail
 The canonical private human-labeled dataset is `data/labeling/generated/labeled-emails.json`. Validate it and rebuild the deterministic development/holdout split with:
 
 ```bash
-npm run jev:prepare
+uv run email-jev-prepare
 ```
 
 The versioned classifier sends four independent questions over the same email state in one TypeSafe request:
@@ -84,18 +104,18 @@ The versioned classifier sends four independent questions over the same email st
 After setting `TYPESAFE_API_KEY` in `.env`, run the 39-email held-out evaluation:
 
 ```bash
-npm run jev:evaluate
+uv run email-jev-evaluate
 ```
 
 For broader error analysis, run all 199 definitively labeled emails without replacing the held-out report:
 
 ```bash
-npm run jev:evaluate:all
+uv run email-jev-evaluate --all-labeled
 ```
 
 This larger result is diagnostic rather than a clean generalization estimate because it includes the 160 development examples. Those emails are used to improve and version the criteria; they are not dumped into each Jev request. The 39 held-out emails are never supplied as reference examples. The benchmark UI dataset selector keeps both reports available.
 
-The evaluator imports the same classifier function and question configuration that production will call. It records the returned model version, full probability distributions, confidence, raw accuracy, automatic coverage, automatic-only accuracy, per-category results, and token usage. Run `npm run dashboard` and open **Evaluate Jev** to inspect the report. Saved results from an older classifier version are marked stale rather than mixed with the current benchmark.
+The evaluator imports the same classifier function and question configuration that production will call. It records the returned model version, full probability distributions, confidence, raw accuracy, automatic coverage, automatic-only accuracy, per-category results, and token usage. Run `uv run email-dashboard` and open **Evaluate Jev** to inspect the report. Saved results from an older classifier version are marked stale rather than mixed with the current benchmark.
 
 The existing 200 human labels define email-category ground truth only. Therefore, the benchmark scores the category Choice and clearly displays next-action, urgency, and draft-needed outputs as unscored. Those fields need separate human labels before their accuracy can be claimed. The single offer example remains in development, so the first held-out report cannot measure offer accuracy.
 
@@ -106,7 +126,7 @@ Phase 5 adds versioned classifier records, frozen classification runs, immutable
 After applying migrations `002` and `003`, import the existing private labels and register the current benchmarked classifier with:
 
 ```bash
-npm run phase5:bootstrap
+uv run email-phase5-bootstrap
 ```
 
 The bootstrap is idempotent. Repeating it imports zero duplicate labels. It stores the benchmark summary but does not upload the private per-email benchmark result bodies.
