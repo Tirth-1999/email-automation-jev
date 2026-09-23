@@ -18,6 +18,9 @@
     "jev:evaluate:all": "tsx scripts/evaluate-jev.ts --all-labeled",
     "phase5:bootstrap": "tsx scripts/bootstrap-classification-data.ts",
     "classify": "tsx scripts/classify-emails.ts",
+    "applications:group": "tsx scripts/group-applications.ts",
+    "automate:once": "tsx scripts/run-automation.ts",
+    "scheduler": "tsx scripts/run-automation.ts --watch",
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test"
@@ -28,6 +31,8 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
     "@typesafe-ai/sdk": "^0.6.0",
+    "d3": "^7.9.0",
+    "d3-sankey": "^0.12.3",
     "dotenv": "^17.2.2",
     "googleapis": "^160.0.0",
     "html-to-text": "^9.0.5"

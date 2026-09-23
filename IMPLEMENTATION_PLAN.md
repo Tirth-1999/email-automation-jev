@@ -17,178 +17,23 @@ Build a dependable job-email workspace that:
 
 ## Current status
 
-| Phase | Deliverable | Status |
-| --- | --- | --- |
-| 0 | Architecture and implementation plan | Complete; maintained here |
-| 1 | Gmail ingestion and Supabase persistence | Working with paginated full-mailbox ingestion |
-| 2 | Human labeling and evaluation set | Complete for the first 200 emails |
-| 3 | Jev classifier and benchmark | Complete for category ground truth; other judgments remain unscored |
-| 4 | Dashboard shell and UI migration | Complete |
-| 5 | Durable run, result, review, and label storage | Complete |
-| 6 | Classification worker and Command Center | Complete; ready for controlled Phase 7 runs |
-| 7 | Full-dataset validation and production classification | Not started |
-| 8 | Correction and optional LLM-review workflow | Not started |
-| 9 | Email Board and analytics | Not started |
-| 10 | Application grouping, lifecycle, and application board | Not started |
-| 11 | Scheduling, observability, and draft assistance | Not started |
-| 12 | AI data assistant / RAG | Later roadmap |
+| Phase | Deliverable | Status | Commands |
+| --- | --- | --- | --- |
+| 0 | Architecture and implementation plan | Complete; maintained here | `npm ci`<br>`npm run check` |
+| 1 | Gmail ingestion and Supabase persistence | Working with paginated full-mailbox ingestion | Apply `001_email_ingestion.sql`<br>`npm run gmail:auth`<br>`npm run ingest`<br>`npm run ingest:full`<br>`npm run ingest:resume`<br>`npm run inspect` |
+| 2 | Human labeling and evaluation set | Complete for the first 200 emails | `npm run sample:emails` once<br>`npm run dashboard`<br>Use **Add emails** for later samples |
+| 3 | Jev classifier and benchmark | Complete for category ground truth; other judgments remain unscored | `npm run jev:prepare`<br>`npm run jev:evaluate`<br>`npm run jev:evaluate:all` |
+| 4 | Dashboard shell and UI migration | Complete | `npm run dashboard`<br>Optional: `LABELING_UI_PORT=4174 npm run dashboard` |
+| 5 | Durable run, result, and human-label storage | Complete; simplified to five tables and one read view | Apply migrations `002` through `005` in order<br>`npm run phase5:bootstrap` |
+| 6 | Classification worker and Command Center | Complete; the UI orchestrates incremental Gmail sync → unclassified Jev run → publication to Email Board, Applications, and Analytics | `npm run dashboard`<br>Open **Command Center** and run the three numbered steps<br>CLI fallback: `npm run classify -- --scope unclassified --limit 25 --concurrency 3 --batch-size 10` |
+| 7 | Full-dataset validation and production classification | Complete; the full mailbox has 6,602 classified emails, including a successful 6,152-email production run after controlled validation | `npm run dashboard`, then use **Command Center** for incremental production runs<br>Use **Jev Lab → Performance** only for disposable timing experiments |
+| 8 | Human corrections and LLM reply drafts | Complete; GPT-4o Mini drafting is limited to Reply Needed emails | `npm run dashboard`<br>Open **Application Board → Emails**, select an email, correct its category or generate a draft<br>Configure `OPENAI_API_KEY`, `OPENAI_MODEL=gpt-4o-mini`, and optional `REPLY_WRITING_PROFILE` |
+| 9 | Email decisions and analytics | Complete; Kanban lanes, category/action filtering, live mailbox aggregates, confidence, benchmark quality, and durable-run performance | `npm run dashboard`<br>Open **Application Board → Emails** or **Analytics**<br>Click an Analytics category/action bar to inspect its source emails |
+| 10 | Application grouping, lifecycle, and application board | Complete for the classified corpus; deterministic identity rules plus confidence-gated Jev relationship checks handle reused Gmail threads, with automatic materialization, explainable ghosting, manual review, application Kanban, and Sankey | Apply `006_application_lifecycle.sql` once<br>Normally publish from **Command Center**; recovery: `npm run applications:group`<br>Open **Application Board → Applications** or **Analytics** |
+| 11 | Scheduling, observability, and draft assistance | Complete; hourly incremental orchestration, atomic lease, structured body-free logs, health probe, optional failure webhook, and reviewed drafts | Apply `007_operations_automation.sql` once<br>Test: `npm run automate:once`<br>Continuous runner: `npm run scheduler`<br>Probe: `GET /api/operations/health` |
+| 12 | AI data assistant / RAG | Later roadmap | Not available yet |
 
-## Phase command runbook
-
-Run commands from the repository root. Install the locked dependencies once after cloning or pulling changes:
-
-```bash
-npm ci
-```
-
-Keep local credentials in `.env`; use `.env.example` as the variable checklist. Never commit `.env`, `.gmail-token.json`, or files under `data/labeling/generated/`.
-
-### Phase 0 — Architecture
-
-No runtime command. Review this implementation plan and verify the repository before beginning work:
-
-```bash
-git status
-npm run check
-```
-
-### Phase 1 — Gmail ingestion
-
-Apply `supabase/migrations/001_email_ingestion.sql` through the Supabase SQL Editor before the first ingestion.
-
-Authorize Gmail once, then run incremental synchronization during normal use:
-
-```bash
-npm run gmail:auth
-npm run ingest
-```
-
-Discover the complete mailbox or resume a previously interrupted full discovery:
-
-```bash
-npm run ingest:full
-npm run ingest:resume
-```
-
-For a limited test import and a read-only storage check:
-
-```bash
-npm run ingest -- --full --limit=100
-npm run inspect
-```
-
-### Phase 2 — Human labeling
-
-Create the initial private review pool only when it does not already exist, then open the dashboard:
-
-```bash
-npm run sample:emails
-npm run dashboard
-```
-
-Use **Add emails** inside Review Emails for subsequent duplicate-free samples. Do not recreate the pool with `--force` unless intentionally discarding the existing sampling layout.
-
-### Phase 3 — Jev preparation and evaluation
-
-Rebuild the deterministic development/holdout split, run the held-out release benchmark, and optionally run the broader diagnostic benchmark:
-
-```bash
-npm run jev:prepare
-npm run jev:evaluate
-npm run jev:evaluate:all
-```
-
-Inspect both saved reports from **Evaluate Jev**:
-
-```bash
-npm run dashboard
-```
-
-### Phase 4 — Dashboard
-
-Start the unified local workspace and open `http://127.0.0.1:4173`:
-
-```bash
-npm run dashboard
-```
-
-To use another port:
-
-```bash
-LABELING_UI_PORT=4174 npm run dashboard
-```
-
-### Phase 5 — Durable Supabase storage
-
-Apply these migrations in order through the Supabase SQL Editor:
-
-1. `supabase/migrations/002_classification_pipeline.sql`
-2. `supabase/migrations/003_classification_bootstrap_keys.sql`
-
-Then import the existing human labels and register the approved classifier. This command is safe to repeat:
-
-```bash
-npm run phase5:bootstrap
-```
-
-### Phase 6 — Classification worker and Command Center
-
-Preview and launch runs from **Command Center**:
-
-```bash
-npm run dashboard
-```
-
-Or run a controlled batch from the terminal:
-
-```bash
-npm run classify -- --scope unclassified --limit 25 --concurrency 3 --batch-size 10
-```
-
-Resume only the queued rows of an interrupted run:
-
-```bash
-npm run classify -- --run-id RUN_UUID
-```
-
-Show every supported worker option without starting a run:
-
-```bash
-npm run classify -- --help
-```
-
-### Phase 7 — Controlled production validation
-
-Phase 7 uses the existing commands in this order; inspect results in the dashboard after every classification step:
-
-```bash
-npm run jev:prepare
-npm run jev:evaluate
-npm run phase5:bootstrap
-npm run classify -- --scope unclassified --limit 25 --concurrency 3 --batch-size 10
-npm run classify -- --scope unclassified --limit 200 --concurrency 5 --batch-size 25
-npm run dashboard
-```
-
-Do not start the unrestricted mailbox run until the 25- and 200-email runs have been reconciled. When approved, omit `--limit`:
-
-```bash
-npm run classify -- --scope unclassified --concurrency 5 --batch-size 25
-```
-
-### Phases 8–12 — Future work
-
-These phases do not have runnable commands yet. Add commands here only after their implementation and acceptance checks exist; do not document placeholder commands as if they work.
-
-### Validation after any implemented phase
-
-```bash
-npm run typecheck
-npm test
-npm run check
-```
-
-`npm run check` runs both TypeScript validation and the complete automated test suite, so it is the final pre-commit check.
+Run all commands from the repository root. Keep secrets in `.env`, use `.env.example` as the checklist, and never commit `.env`, `.gmail-token.json`, or `data/labeling/generated/`. `npm run check` is the final validation command after every implemented phase.
 
 ## Architecture decisions
 
@@ -197,7 +42,7 @@ npm run check
 - Gmail thread IDs are retained but are not assumed to equal job applications.
 - Gmail, Supabase service, TypeSafe, and future OpenAI credentials remain server-side.
 - Jev outputs are immutable, versioned observations. A later run creates a new result instead of overwriting an old one.
-- Human-confirmed labels are ground truth. Jev and LLM suggestions never become ground truth automatically.
+- Human-confirmed labels are ground truth. Jev and LLM output never becomes ground truth automatically.
 - Ghosting is derived from application activity and elapsed time, not classified from one email.
 - The first operational board is an **Email Board**. An **Application Board** follows only after reliable grouping.
 - The dashboard may remain framework-free until component complexity justifies a frontend framework.
@@ -216,16 +61,14 @@ npm run check
 
 ## Dashboard navigation
 
-The unified dashboard will grow to these tabs:
+The unified dashboard uses four top-level product areas:
 
 1. **Command Center** — configure, start, resume, and monitor sync or classification runs.
-2. **Review Emails** — create and maintain human labels.
-3. **Evaluate Jev** — compare a selected result set with human ground truth.
-4. **Email Board** — inspect classified email cards and make audited corrections.
-5. **Analytics** — inspect category, action, confidence, accuracy, and processing trends.
-6. **AI Assistant** — later, a read-only conversational interface over application data and email evidence.
+2. **Application Board** — switch between **Emails** for message-level decisions and **Applications** for grouped job lifecycles.
+3. **Jev Lab** — one model-development workspace with **Label Set**, **Quality**, and **Performance** modes. Label Set maintains human ground truth; Quality compares Jev with those labels; Performance measures live latency and throughput without saving experimental decisions as production results.
+4. **Analytics** — inspect category, action, confidence, accuracy, and processing trends.
 
-Command Center owns operations. Other tabs consume durable results and never hide long-running work inside a browser request.
+Command Center owns production operations. Jev Lab owns model development and testing. Other tabs consume durable results and never hide long-running work inside a browser request. The planned AI Assistant remains in the roadmap but is intentionally absent from navigation until it is functional.
 
 ## Target project layout
 
@@ -261,7 +104,7 @@ scripts/                         # thin CLI entry points using shared logic
 supabase/migrations/
 ```
 
-The dashboard now serves the migrated Review Emails and Evaluate Jev workflows. The superseded `labeling-ui` path was retired after parity verification.
+The dashboard now serves the migrated labeling and evaluation workflows inside Jev Lab. The superseded `labeling-ui` path was retired after parity verification.
 
 ---
 
@@ -369,53 +212,51 @@ The all-label run is diagnostic because it includes development examples. Only t
 ### Scope
 
 - Move the current UI to `apps/dashboard` without changing its working behavior.
-- Preserve the Review Emails / Evaluate Jev pill navigation, shared email reader, and bottom review progress controls.
-- Add empty but clearly labeled Command Center, Email Board, Analytics, and future AI Assistant routes.
+- Preserve the labeling and evaluation behavior, shared email reader, and bottom review progress controls.
+- Consolidate Label Set, Quality, and Performance under Jev Lab while keeping production operations and result views distinct.
 - Split shared components only after parity is verified.
 
 ### Acceptance criteria
 
-- [x] Review Emails behaves exactly as before migration.
-- [x] Evaluate Jev displays the same metrics and expandable evidence.
+- [x] Jev Lab → Label Set behaves exactly as the original Review Emails workflow.
+- [x] Jev Lab → Quality displays the same metrics and expandable evidence.
 - [x] Hash-addressable navigation and refresh work for every implemented tab.
 - [x] Legacy UI removed after visual, API, type, and test parity passed.
 
 ---
 
-## Phase 5 — Durable classification, label, and review schema
+## Phase 5 — Durable classification and correction schema
 
-Status: complete — migrations are live in Supabase, all 200 existing human labels are imported, and Jev v4 is registered as an approved classifier version.
+Status: complete — migrations are live in Supabase, all 200 existing human labels are preserved, and 2,455 existing Jev results survived the schema simplification.
+
+The MVP intentionally uses five tables rather than separate registry, label-event, and review-case tables:
+
+| Object | Purpose |
+| --- | --- |
+| `gmail_accounts` | Connected Gmail identities and synchronization cursor |
+| `emails` | Normalized email content, current human correction, and current reviewed reply draft |
+| `sync_runs` | Gmail ingestion history and counters |
+| `classification_runs` | Frozen Jev configuration, selection, progress, and terminal run state |
+| `email_classifications` | Per-email queue state and immutable Jev output for each run |
+| `email_board` view | Latest production Jev result plus the current human override |
 
 ### `classification_runs`
 
-One row per benchmark, diagnostic, production, or reprocessing batch. It stores mailbox, status, classifier/model version, selection rules, frozen total count, progress counters, confidence threshold, concurrency, batch size, timestamps, and sanitized run errors.
+One row per benchmark, diagnostic, production, or reprocessing batch. It stores mailbox, status, classifier/model version, the frozen classifier configuration, selection rules, frozen total count, progress counters, confidence threshold, concurrency, batch size, timestamps, and sanitized run errors.
 
 Statuses: `queued`, `running`, `succeeded`, `partial`, `failed`, or `cancelled`.
 
-### `email_classification_results`
+### `email_classifications`
 
 One immutable row per email per run. It stores source IDs, processing status, category and full probability distribution, next action and distribution, urgency, draft probability and policy decision, returned model, token usage, timestamps, and sanitized errors.
 
 Required constraint: `unique (run_id, email_id)`.
 
-### `email_human_label_events`
+### Human corrections and drafts
 
-Append-only human decisions with email ID; category and later action/urgency/draft labels; source (`review_ui`, `board_override`, or `llm_review_confirmation`); reviewer; notes; timestamp; and superseded event reference. A view exposes the latest confirmed label while history remains auditable.
+The `emails` table holds the current human-confirmed category, optional action/urgency/draft judgments, label source, notes, and timestamp. It also holds the latest generated reply draft and the model/instructions that produced it. The original Jev observation remains untouched in `email_classifications`.
 
-### `classification_review_cases`
-
-Tracks email/result IDs; reason (`low_confidence`, `human_disagreement`, `manual_override`, or `processing_issue`); status; immutable Jev snapshot; optional LLM provider/model/suggestion/usage/error; final human decision; notes; reviewer; and timestamps.
-
-### `classifier_versions`
-
-Records exact question configuration, composition policy, source dataset/reference version, release status, and benchmark summary. A production run points to one approved version.
-
-### Views
-
-- `latest_email_classifications`
-- `latest_email_human_labels`
-- `classification_run_summary`
-- `email_board_items`
+This is an intentional MVP tradeoff: it keeps the database understandable. If multi-user audit history becomes a real requirement, append-only correction and draft-history tables can be added later without changing the current API.
 
 ### Safety and access
 
@@ -428,12 +269,11 @@ Records exact question configuration, composition policy, source dataset/referen
 
 - [x] Classification runs and per-email results have durable, constrained schemas.
 - [x] Completed classification results cannot be edited in place.
-- [x] Human-label corrections are append-only and idempotently importable.
-- [x] Review cases can preserve Jev and future LLM evidence separately.
-- [x] Latest-classification, latest-human-label, run-summary, and email-board views exist.
+- [x] Current human corrections are idempotently importable and cannot overwrite Jev results.
+- [x] The Email Board combines the latest production result with the current human correction.
 - [x] RLS blocks browser roles; the server service role has the required access.
 - [x] The 200-label bootstrap is repeatable and creates no duplicates.
-- [x] The approved Jev v4 record stores benchmark summary and dataset version.
+- [x] Every run freezes the Jev version and classifier configuration used for its results.
 
 ---
 
@@ -448,13 +288,13 @@ Status: complete. The TypeScript CLI and dashboard use the same durable worker. 
 3. Read queued work in bounded batches.
 4. Process through a concurrency-limited worker pool.
 5. Send the four Jev questions together for each email.
-6. Persist each result immediately.
+6. Keep the active batch in memory and persist all of its successes and failures with one bulk upsert after the batch finishes.
 7. Retry transient rate-limit and server errors with exponential backoff and jitter.
 8. Isolate permanent per-email failures without discarding completed work.
 9. Update aggregate counters continuously.
 10. Finish as `succeeded`, `partial`, `failed`, or `cancelled`.
 
-The CLI and dashboard call the same worker. A browser connection never owns the job.
+The CLI and dashboard call the same worker. A browser connection never owns the job. Command Center also calls the same incremental Gmail ingestion service as the CLI, reports newly inserted and updated emails, and prevents Gmail ingestion and production classification from overlapping.
 
 Initial measured defaults: concurrency `5`, batch size `25`, maximum concurrency `10`, and at most `6` retry attempts.
 
@@ -473,14 +313,21 @@ A count-only preview shows selected, previously classified, to-process, and esti
 ### Implemented
 
 - Email IDs are selected once and inserted as queued result rows before inference starts.
+- Each worker batch bulk-loads email state from Supabase before Jev fan-out instead of issuing one competing read per email.
 - Scope supports all, unclassified, uncertain, failed, date-bounded, maximum-count, and explicit email selections.
 - Concurrency is limited to 1–10, batch size to 1–250, and SDK retries to 0–6.
 - TypeSafe handles retryable connection, timeout, rate-limit, and server responses with exponential backoff, jitter, and `Retry-After` support.
-- Each successful or failed email is persisted immediately; aggregate counters refresh after every batch.
+- Each completed batch is persisted with one bulk upsert; aggregate counters refresh after that batch commit.
 - Cancellation is durable and checked before scheduling the next batch.
 - Cancelled, partial, failed-with-queued-work, and interrupted running batches can resume without selecting new email IDs.
 - The CLI supports new and resumed runs through `npm run classify`.
-- Command Center supports count-only preview, configuration, start, five-second progress polling, cancellation, and resume.
+- Command Center presents one ordered operational pipeline: incremental Gmail sync, Jev classification of the resulting unclassified pool, and publication of the same durable result set to Email Board, Applications, and Analytics.
+- Successful and partially successful production runs automatically rebuild the application model. **Publish latest results** provides an idempotent manual recovery path.
+- Email Board and Applications paginate through the complete result set instead of truncating at the first 500 or 1,000 records; Analytics reads the same complete corpus.
+- The normal Sync Gmail action resumes from `gmail_accounts.latest_history_id`; only a missing or expired Gmail history cursor triggers a full/recovery scan.
+- Gmail and Jev jobs are single-flight operations and cannot overlap; the UI polls their state every two seconds.
+- Gmail progress exposes discovery, pending, inserted, updated, skipped, and deleted counts while durable `sync_runs` remain the source of historical truth.
+- Advanced classification settings retain count-only preview, scope configuration, cancellation, and resume.
 
 ### Controlled first run
 
@@ -499,9 +346,13 @@ npm run classify -- --run-id RUN_UUID
 - [x] A run freezes selected email IDs before classification starts.
 - [x] Four Jev judgments are sent together for each email.
 - [x] Concurrency, batching, retries, partial failure, and cancellation are bounded and persisted.
-- [x] Completed results are written immediately and remain immutable.
+- [x] Completed batches are written atomically at the batch boundary and terminal results remain immutable.
 - [x] Run counters and progress are visible through the Command Center.
 - [x] Queued work can resume without re-enqueuing completed results.
+- [x] New Gmail messages can be incrementally ingested from Command Center before classification.
+- [x] The pipeline shows how many emails are stored, Jev-classified, waiting, and human-corrected.
+- [x] Ingestion and classification are mutually exclusive, preventing a changing classification scope during sync.
+- [x] A completed production run automatically feeds Email Board, Applications, and the application-level Sankey from one durable result set.
 - [x] CLI, server, worker, browser JavaScript, type checks, and automated tests pass.
 
 ---
@@ -513,7 +364,7 @@ The mailbox-wide run deliberately follows durable storage and resumability.
 1. Freeze and version the complete human dataset.
 2. Verify the deterministic development and held-out split.
 3. Regenerate the development-derived, versioned criteria/reference configuration without including held-out emails.
-4. Run the held-out benchmark and inspect disagreements in the UI.
+4. Run the held-out benchmark and inspect disagreements in **Jev Lab → Quality**.
 5. Approve or reject the classifier version using documented thresholds.
 6. Smoke-test a durable production run on 25 emails.
 7. Run 200 emails and verify persistence, retry, resume, and usage reporting.
@@ -523,35 +374,57 @@ The mailbox-wide run deliberately follows durable storage and resumability.
 
 Supabase persistence is part of the run itself, not a risky one-time upload after all calls finish.
 
+### Jev Lab performance finding
+
+The initial 500-at-once test completed 500/500 Jev calls with no rate limits, but 500 individual Supabase reads created about 3,962 ms of average application overhead. After replacing that N+1 pattern with chunked bulk loading, a later 500-email validation completed 500/500 in 3.94 seconds with no rate limits. Its classification wave took 1.10 seconds, successful throughput reached 456.6 emails/second, and average application overhead fell to 1 ms.
+
+The 6,000-email stress test at concurrency 500 established the service boundary rather than a production setting. It finished all attempts in 19.63 seconds: 1,321 succeeded and 4,679 received HTTP 429, for 121.9 successful emails/second. Selection took 2.40 seconds, bulk loading took 6.39 seconds, and the classification stage took 10.84 seconds. Successful Jev calls averaged 714 ms, with p50 353 ms and p95 2,467 ms. The next performance gate is to test lower concurrency choices and identify the highest setting with no rate-limit failures.
+
+The durable worker uses the same bulk-read shape. It accumulates each bounded batch in memory and persists that completed batch with one Supabase upsert, retaining batch-level resumability without issuing one database write per email.
+
 ---
 
-## Phase 8 — Corrections and optional LLM review
+## Phase 8 — Corrections and contextual reply drafts
+
+Status: complete. The Email Board exposes both the Jev decision and the effective human-confirmed category, and can generate a structured draft with GPT-4o Mini through a server-side OpenAI Responses API call.
 
 ### Manual correction flow
 
 When a user changes a tile or benchmark decision:
 
 1. keep the original Jev result unchanged;
-2. create or update a review case;
-3. show Jev evidence and prior human-label history;
-4. require explicit confirmation of corrected fields;
-5. append a human-label event;
-6. refresh the board from the latest confirmed label view;
-7. include the confirmed example in the next dataset version according to split policy.
+2. show the email, Jev decision, confidence, next action, and current human decision together;
+3. require an explicit category and Save action;
+4. store the current correction, notes, source, and timestamp on the email;
+5. add or update the same email in the private Jev Lab Label Set and canonical labeled JSON;
+6. refresh the board from the `email_board` view;
+7. include confirmed corrections in the next dataset version according to split policy.
 
 This closes the learning loop without pretending that Jev learns online from one edit.
 
-### “Ask AI to review” flow
+### Contextual reply-draft flow
 
-A disagreement or uncertain result may send the normalized email, label definitions, and Jev output to a configured OpenAI model through the server. The LLM returns a structured recommendation and concise evidence, displayed beside Jev.
+A user may send a selected **Reply Needed** email, Jev category/action, human correction notes, and editable personal writing instructions to GPT-4o Mini through the server. The model returns a structured subject and body for review.
 
-- It never overwrites Jev history.
-- It never writes a human label by itself.
-- It never changes the classifier configuration automatically.
-- A person must confirm, change, or dismiss it.
-- Provider, model, prompt version, output, usage, and reviewer outcome are audited.
+- It is called only after the user clicks **Generate draft**.
+- It never sends an email or opens a Gmail compose action.
+- It never overwrites Jev history or writes a human label.
+- The prompt forbids invented qualifications, dates, availability, authorization, compensation, attachments, or commitments.
+- Missing facts must be represented as `[confirm ...]` placeholders.
+- The latest reviewed draft, provider, model, personal instructions, and generation time are stored on the email.
+- OpenAI response storage is disabled with `store: false`.
 
-`OPENAI_API_KEY` is server-only. The first version is review-only and cannot send email.
+`OPENAI_API_KEY` and `OPENAI_MODEL` are server-only. `REPLY_WRITING_PROFILE` supplies the default personal style and factual boundaries. The browser receives only whether the provider is ready.
+
+### Acceptance criteria
+
+- [x] A correction updates the effective category without mutating the Jev result.
+- [x] A correction becomes a visible Jev Lab Label Set example and canonical human label.
+- [x] Full email context and correction notes are available beside the decision.
+- [x] Reply generation uses structured output and saves a reviewable subject/body.
+- [x] Draft generation is impossible without explicit user action and provider configuration.
+- [x] Reply controls are absent for other categories and the API independently enforces the same rule.
+- [x] Nothing in this phase can send an email.
 
 ### Dataset improvement rule
 
@@ -563,7 +436,7 @@ Confirmed corrections enter the next dataset version. Every changed criterion/ex
 
 ### Email Board
 
-Columns: Applied, Outreach, Reply Needed, Interview / Assessment, Offer, Rejected, Other, and Uncertain.
+Kanban lanes: Applied, Outreach, Reply Needed, Interview / Assessment, Offer, Rejected, Other, and Uncertain.
 
 Cards show subject, sender/company hint, date, next action, urgency, confidence, and direction. Opening a card shows full evidence and its Gmail link. Moving a card starts the manual correction flow; it does not mutate historical inference. Filters include result set, date, confidence, direction, category, and next action.
 
@@ -584,24 +457,32 @@ Every metric links to its result set or source emails.
 
 Introduce `applications`, `application_messages`, and `application_status_events`. Extract or infer company, role, requisition ID, sender domain, and relevant dates; allow durable manual grouping overrides.
 
+Grouping uses a cascade rather than equating Gmail threads with applications: explicit requisition conflicts split immediately; matching requisitions or company/role evidence join deterministically; outgoing replies stay connected when no conflict exists; and unresolved same-thread pairs are sent to a batched Jev Noul asking whether they represent the same specific opportunity. The application only joins high-probability matches and conservatively separates API failures or uncertain answers.
+
 Only then add one card per application, deterministic lifecycle precedence, explainable ghosting, company funnels, conversion/time-to-response analytics, and Sankey paths such as `Applied → Reply Needed → Interview / Assessment → Offer / Rejected / Ghosted`. Building those metrics directly from email counts would double-count applications.
 
 ---
 
 ## Phase 11 — Scheduling, observability, and draft assistance
 
-- Schedule incremental Gmail sync and classification hourly initially; later evaluate Gmail push notifications.
-- Prevent overlapping work with account/run locks.
-- Add structured logs, metrics, retries, and failure notification without logging email bodies.
-- Apply retention and privacy controls.
-- Generate suggested reply text or Gmail drafts only for eligible, human-visible items.
-- Never send a message without explicit user confirmation.
+Status: complete. Migration 007 adds an expiring, account-scoped pipeline lease and the latest automation health snapshot to `gmail_accounts`; it does not add another table. Detailed history remains in the existing `sync_runs` and `classification_runs` tables.
+
+- `npm run automate:once` performs incremental Gmail sync → unclassified Jev classification → application/analytics publication.
+- `npm run scheduler` runs immediately and then hourly on wall-clock boundaries by default.
+- Supabase RPC acquisition prevents scheduled work from overlapping sync or classification work across processes; the existing Command Center also respects the lease.
+- Structured JSON logs and `/api/operations/health` expose stages, counts, durations, freshness, and sanitized errors without email content.
+- An optional HTTPS failure webhook carries only body-free operational metadata.
+- Gmail and TypeSafe retry behavior remains bounded by the existing controllers and SDK configuration.
+- Reply generation is restricted to effective `reply_needed` emails. Users can edit and explicitly save a reviewed version; the application has no send endpoint.
+- Browser roles remain blocked by RLS, API credentials remain server-side, and no message content enters operational logs or alerts.
+
+Gmail push notifications remain a later optimization. Hourly incremental history sync is the simpler reliable production default for the current mailbox volume.
 
 ---
 
 ## Phase 12 — AI Assistant / RAG roadmap
 
-This is intentionally deferred until classification and application grouping are reliable. The **AI Assistant** tab will support questions such as “How many applications did I complete this month?” and “Show interviews needing action.” Its first version is read-only.
+This is intentionally deferred until classification and application grouping are reliable. A future **AI Assistant** will support questions such as “How many applications did I complete this month?” and “Show interviews needing action.” Its first version is read-only and will enter navigation only when functional.
 
 - Use safe SQL/query tools for structured counts, filters, and aggregations.
 - Use retrieval over email/application text only for semantic evidence questions.
@@ -642,9 +523,8 @@ The duplicate dashboard plan and superseded labeling UI/server were removed afte
 
 ## Delivery order from here
 
-1. **Next:** Phase 7, frozen dataset validation, benchmark approval, and staged mailbox run.
-2. Phase 8, corrections and optional OpenAI review.
-3. Phase 9, Email Board and analytics.
-4. Later phases only after their prerequisites pass.
+1. Finish Phase 7 by identifying a sustainable Jev concurrency and classifying the remaining mailbox.
+2. Validate Phase 10 grouping quality on the fully classified mailbox and correct ambiguous applications in the Applications workspace.
+3. Deploy Phase 11 with `npm run automate:once` hourly, or keep `npm run scheduler` alive under a process manager.
 
 For every phase: confirm scope, implement, run automated checks, verify acceptance criteria together, update this plan, and only then begin the next phase.

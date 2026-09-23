@@ -8,7 +8,7 @@ This repository is intentionally being built one phase at a time. The current so
 
 ## Current status
 
-**Gmail ingestion, the 200-email human dataset, Jev v4 evaluation, the durable Supabase schema, and the resumable Phase 6 production worker with Command Center are complete. Phase 7 is the controlled mailbox-wide validation run.**
+**Gmail ingestion, the 200-email human dataset, Jev evaluation, resumable production classification, application grouping, Kanban boards, analytics, corrections, reviewed reply drafts, hourly automation, and operational health reporting are complete.**
 
 - Why Supabase Postgres
 
@@ -95,25 +95,25 @@ npm run jev:evaluate:all
 
 This larger result is diagnostic rather than a clean generalization estimate because it includes the 160 development examples. Those emails are used to improve and version the criteria; they are not dumped into each Jev request. The 39 held-out emails are never supplied as reference examples. The benchmark UI dataset selector keeps both reports available.
 
-The evaluator imports the same classifier function and question configuration that production will call. It records the returned model version, full probability distributions, confidence, raw accuracy, automatic coverage, automatic-only accuracy, per-category results, and token usage. Run `npm run dashboard` and open **Evaluate Jev** to inspect the report. Saved results from an older classifier version are marked stale rather than mixed with the current benchmark.
+The evaluator imports the same classifier function and question configuration that production will call. It records the returned model version, full probability distributions, confidence, raw accuracy, automatic coverage, automatic-only accuracy, per-category results, and token usage. Run `npm run dashboard` and open **Jev Lab → Quality** to inspect the report. Saved results from an older classifier version are marked stale rather than mixed with the current benchmark.
 
 The existing 200 human labels define email-category ground truth only. Therefore, the benchmark scores the category Choice and clearly displays next-action, urgency, and draft-needed outputs as unscored. Those fields need separate human labels before their accuracy can be claimed. The single offer example remains in development, so the first held-out report cannot measure offer accuracy.
 
 ## Durable classification data
 
-Phase 5 adds versioned classifier records, frozen classification runs, immutable per-email results, append-only human-label history, review cases, and read views for the dashboard. Browser roles have no direct access; server code uses the Supabase service role.
+The email/classification core deliberately contains only five tables: `gmail_accounts`, `emails`, `sync_runs`, `classification_runs`, and `email_classifications`. The `email_board` view combines each email with its latest completed production classification and current human correction. Phase 10 adds only the three relational tables required for application-level tracking: `applications`, `application_messages`, and `application_status_events`. Browser roles have no direct access; server code uses the Supabase service role.
 
-After applying migrations `002` and `003`, import the existing private labels and register the current benchmarked classifier with:
+Apply migrations `001` through `007` in filename order. Import or refresh the private labels with:
 
 ```bash
 npm run phase5:bootstrap
 ```
 
-The bootstrap is idempotent. Repeating it imports zero duplicate labels. It stores the benchmark summary but does not upload the private per-email benchmark result bodies.
+The bootstrap is idempotent. It updates the current human-label columns on the matching email rows; Jev results remain immutable in `email_classifications`.
 
 ## Production classification
 
-The Phase 6 worker freezes selected email IDs into a durable run before making Jev calls. It processes bounded batches with concurrency limits, uses the TypeSafe SDK's retry and `Retry-After` behavior, saves each result immediately, isolates per-email failures, and preserves queued work for resume after cancellation or interruption.
+The Phase 6 worker freezes selected email IDs into a durable run before making Jev calls. It bulk-loads and processes bounded batches with concurrency limits, uses the TypeSafe SDK's retry and `Retry-After` behavior, saves each completed batch with one Supabase upsert, isolates per-email failures, and preserves unfinished batches for resume after cancellation or interruption.
 
 Start with a controlled batch:
 
@@ -130,6 +130,76 @@ npm run classify -- --run-id RUN_UUID
 Scopes are `unclassified`, `all`, `uncertain`, and `failed`. Optional `--after` and `--before` ISO timestamps restrict the selection window. Run `npm run dashboard`, open **Command Center**, and preview before starting. The UI polls durable progress, displays result counts and throughput, and supports cancellation and resume.
 
 Closing the browser does not stop a run. If the Node server or CLI process stops, use `--run-id` or the Command Center resume action to continue its remaining queued rows.
+
+### Run the mailbox from Command Center
+
+Command Center is the normal operational entry point:
+
+1. Click **Sync new emails**. The server continues from the saved Gmail history cursor, includes received and sent mail, includes Spam and Trash according to `.env`, excludes drafts, and reports new/updated counts. It performs a full scan only for the first sync or when Gmail reports that the saved history cursor has expired.
+2. Click **Run Jev classification**. The displayed waiting count is frozen into a durable production run, classified in bounded batches, and persisted to Supabase.
+3. Click **Publish latest results**. This verifies the classified-email corpus, rebuilds application groupings, and refreshes the Sankey. Successful Command Center classification runs perform this step automatically; the button is a safe manual refresh. Then open **Application Board → Emails** to inspect individual messages and save human corrections without modifying the original Jev observation.
+
+Gmail ingestion and production classification cannot run at the same time. The dashboard may be closed after a job starts; Gmail history, `sync_runs`, classification runs, and completed Jev results remain durable in Supabase. The `email_board` view is the single classified-email source for Email Board, application materialization, and Analytics, so all three surfaces represent the same production result set.
+
+## Correct a classification and draft a reply
+
+Start the dashboard and open **Email Board**:
+
+```bash
+npm run dashboard
+```
+
+The board is arranged as horizontal Kanban lanes for Applied, Outreach, Reply Needed, Interview / Assessment, Offer, Rejected, Other, and Uncertain. Select a card to read its header and full body, compare the Jev result with the effective category, and save a manual correction with notes. Saving a correction never changes the historical Jev result; it also adds or updates that email in the private **Jev Lab → Label Set** pool and canonical labeled JSON for the next `jev:prepare` run.
+
+Reply drafting is optional. Configure these server-only values in `.env`:
+
+```env
+OPENAI_API_KEY=replace_me
+OPENAI_MODEL=gpt-4o-mini
+REPLY_WRITING_PROFILE=Write as Tirth Shah in a concise, warm, professional tone. Never invent facts.
+```
+
+Restart the dashboard, select an email in the **Reply Needed** lane, adjust the personal instructions if needed, and click **Generate draft**. The app sends that email's context only at that moment, asks GPT-4o Mini for a structured subject/body, and saves the suggestion. Edit it and click **Save reviewed draft** to retain the human-approved version. Neither action sends email. Reply controls are not rendered for other categories, and the server rejects ineligible draft requests.
+
+## Hourly automation and health
+
+Apply `supabase/migrations/007_operations_automation.sql`, then configure the Phase 11 variables from `.env.example`. Run one complete incremental cycle manually before scheduling it:
+
+```bash
+npm run automate:once
+```
+
+That command acquires an atomic Supabase lease, incrementally syncs Gmail, classifies only newly unclassified emails, rebuilds Applications and Analytics, records body-free counts and durations, then releases the lease. A busy pipeline is skipped safely.
+
+For a continuously running local or server process, set `AUTOMATION_ENABLED=true` and start:
+
+```bash
+npm run scheduler
+```
+
+The default interval is 60 minutes aligned to the next wall-clock boundary. For serverless or hosted cron, invoke `npm run automate:once` hourly instead of keeping the watcher alive. Configure `OPERATIONS_ALERT_WEBHOOK_URL` to receive sanitized failure payloads containing only the failed stage, error, counts, and durations—never email headers or bodies.
+
+The Command Center health strip shows the latest scheduled cycle. A machine-readable probe is available at:
+
+```text
+GET /api/operations/health
+```
+
+It returns HTTP `503` for recorded pipeline failures, and otherwise reports healthy or degraded freshness. Existing RLS keeps browser roles away from email and operational state; all credentials remain server-side.
+
+## Group applications and inspect lifecycle
+
+Command Center now refreshes the application model automatically after a successful or partially successful production run. This CLI command remains available as a recovery or maintenance action:
+
+```bash
+npm run applications:group
+```
+
+Open **Application Board → Applications** for one card per grouped job opportunity. The grouping cascade uses requisition IDs and extracted company/role evidence first. Ambiguous messages inside the same Gmail thread are compared with a batched Jev yes/no relationship judgment. Manual company, role, requisition, and status edits are durable and append a manual lifecycle event.
+
+Gmail conversation continuity is supporting evidence, not an application identity. Different requisitions never merge; shared job-board threads can split into multiple applications; outgoing replies remain attached when no employer or requisition conflict exists. Jev joins an ambiguous pair only at or above `JEV_APPLICATION_MATCH_THRESHOLD` (default `0.72`), and failures conservatively keep the pair separate. Existing manual assignments always take precedence over automatic regrouping.
+
+Open **Analytics** for the application Sankey. It counts grouped applications rather than emails. `ghosted` is added only to an applied/outreach-only application after `APPLICATION_GHOST_DAYS` without later progress; the generated event records that explanation.
 
 ## Message identity
 
@@ -156,7 +226,7 @@ This allows multiple Gmail accounts later while making every synchronization saf
 
 ## Configuration
 
-Local secrets belong in `.env` and must never be committed. The expected variable names will be added in Phase 1 through a safe `.env.example` containing placeholders only.
+Local secrets belong in `.env` and must never be committed. Use `.env.example` as the current checklist of supported variables and placeholders.
 
 The existing TypeSafe key should eventually use the SDK's expected variable name:
 
