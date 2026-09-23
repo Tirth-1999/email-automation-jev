@@ -37,6 +37,14 @@ export interface AnalyticsBreakdownItem {
 
 export interface AnalyticsSnapshot {
   generated_at: string;
+  period: {
+    key: "30" | "60" | "90" | "all";
+    label: string;
+    days: number | null;
+    granularity: "day" | "month";
+    from: string | null;
+    to: string;
+  };
   summary: {
     classified_emails: number;
     needs_action: number;
@@ -107,6 +115,14 @@ export function buildAnalyticsSnapshot(
   tokenRows: RunTokenRow[],
   benchmark: AnalyticsBenchmark | null,
   now = new Date(),
+  period: AnalyticsSnapshot["period"] = {
+    key: "30",
+    label: "Last 30 days",
+    days: 30,
+    granularity: "day",
+    from: new Date(now.getTime() - 29 * 86_400_000).toISOString(),
+    to: now.toISOString(),
+  },
 ): AnalyticsSnapshot {
   const categoryOrder = [
     "applied",
@@ -150,20 +166,35 @@ export function buildAnalyticsSnapshot(
   for (const email of emails) {
     const timestamp = Date.parse(email.internal_date);
     if (!Number.isFinite(timestamp)) continue;
-    const key = new Date(timestamp).toISOString().slice(0, 10);
+    const iso = new Date(timestamp).toISOString();
+    const key = period.granularity === "month" ? `${iso.slice(0, 7)}-01` : iso.slice(0, 10);
     activityCounts.set(key, (activityCounts.get(key) || 0) + 1);
   }
   const activity: Array<{ date: string; count: number }> = [];
-  for (let offset = 29; offset >= 0; offset -= 1) {
-    const date = new Date(now);
-    date.setUTCHours(0, 0, 0, 0);
-    date.setUTCDate(date.getUTCDate() - offset);
-    const key = date.toISOString().slice(0, 10);
-    activity.push({ date: key, count: activityCounts.get(key) || 0 });
+  if (period.granularity === "month") {
+    const validDates = emails.map((email) => Date.parse(email.internal_date)).filter(Number.isFinite);
+    const first = validDates.length ? new Date(Math.min(...validDates)) : new Date(now);
+    const cursor = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), 1));
+    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    while (cursor <= end) {
+      const key = cursor.toISOString().slice(0, 10);
+      activity.push({ date: key, count: activityCounts.get(key) || 0 });
+      cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+    }
+  } else {
+    const days = period.days || 30;
+    for (let offset = days - 1; offset >= 0; offset -= 1) {
+      const date = new Date(now);
+      date.setUTCHours(0, 0, 0, 0);
+      date.setUTCDate(date.getUTCDate() - offset);
+      const key = date.toISOString().slice(0, 10);
+      activity.push({ date: key, count: activityCounts.get(key) || 0 });
+    }
   }
 
   return {
     generated_at: now.toISOString(),
+    period,
     summary: {
       classified_emails: emails.length,
       needs_action: needsAction,

@@ -15,7 +15,13 @@ const input = {
   jevCategory: "reply_needed",
   jevConfidence: 0.81,
   nextAction: "write_reply",
-  candidateApplications: [],
+  candidateApplications: [{
+    id: "application-1",
+    company: "Example",
+    role: "Engineer",
+    latestSubject: "Re: Employment",
+    relationshipHint: "current_application" as const,
+  }],
 };
 
 test("targets high-value and uncertain decisions", () => {
@@ -37,6 +43,10 @@ test("builds bounded structured evidence", () => {
   const payload = buildLlmReviewPayload(input);
   assert.equal((payload.email as { id: string }).id, "email-1");
   assert.equal((payload.jev as { category: string }).category, "reply_needed");
+  assert.equal(
+    (payload.candidate_applications as Array<{ relationshipHint: string }>)[0]?.relationshipHint,
+    "current_application",
+  );
 });
 
 test("parses a schema-conforming review", async () => {

@@ -36,7 +36,8 @@
     "d3-sankey": "^0.12.3",
     "dotenv": "^17.2.2",
     "googleapis": "^160.0.0",
-    "html-to-text": "^9.0.5"
+    "html-to-text": "^9.0.5",
+    "redis": "^6.2.1"
   },
   "devDependencies": {
     "@types/html-to-text": "^9.0.4",

@@ -14,6 +14,8 @@ const labSwitch = document.querySelector("#labSwitch");
 const labTabs = [...document.querySelectorAll("[data-lab-mode]")];
 const boardSwitch = document.querySelector("#boardSwitch");
 const boardTabs = [...document.querySelectorAll("[data-board-mode]")];
+const aiSwitch = document.querySelector("#aiSwitch");
+const aiTabs = [...document.querySelectorAll("[data-ai-mode]")];
 const reviewSidebar = document.querySelector("#reviewSidebar");
 const reviewReader = document.querySelector("#reviewReader");
 const reviewClassifier = document.querySelector("#reviewClassifier");
@@ -113,6 +115,7 @@ const analyticsConfidence = document.querySelector("#analyticsConfidence");
 const analyticsBenchmark = document.querySelector("#analyticsBenchmark");
 const analyticsRuns = document.querySelector("#analyticsRuns");
 const lifecycleSankey = document.querySelector("#lifecycleSankey");
+const analyticsRange = document.querySelector("#analyticsRange");
 const applicationsView = document.querySelector("#applicationsView");
 const applicationStatus = document.querySelector("#applicationStatus");
 const applicationBoard = document.querySelector("#applicationBoard");
@@ -124,6 +127,14 @@ const aiReviewDetail = document.querySelector("#aiReviewDetail");
 const aiReviewCount = document.querySelector("#aiReviewCount");
 const aiLaneSummary = document.querySelector("#aiLaneSummary");
 const aiReviewModel = document.querySelector("#aiReviewModel");
+const aiBrainWorkspace = document.querySelector("#aiBrainWorkspace");
+const aiChatWorkspace = document.querySelector("#aiChatWorkspace");
+const aiLaneSelect = document.querySelector("#aiLaneSelect");
+const aiLaneScope = document.querySelector("#aiLaneScope");
+const aiBrainMetrics = document.querySelector("#aiBrainMetrics");
+const aiBatchProgress = document.querySelector("#aiBatchProgress");
+const aiBatchStatus = document.querySelector("#aiBatchStatus");
+const runAiLane = document.querySelector("#runAiLane");
 const replyDialog = document.querySelector("#replyDialog");
 const replyDialogTitle = document.querySelector("#replyDialogTitle");
 const replySourceMeta = document.querySelector("#replySourceMeta");
@@ -146,13 +157,16 @@ let benchmarkReport = null;
 let commandPollTimer;
 let battlegroundPollTimer;
 let boardEmails = [];
+let boardLaneState = {};
 let boardCurrentEmailId = null;
 let boardReplyProfile = "";
 let boardReplyReady = false;
 let applications = [];
+let applicationLaneState = {};
 let currentApplicationId = null;
 let currentLabMode = "quality";
 let currentBoardMode = "emails";
+let currentAiMode = "brain";
 let selectedPipelineStep = "ingestion";
 let latestCommandSnapshot = null;
 let boardReplyModels = [];
@@ -160,6 +174,76 @@ let replyEmail = null;
 let aiCandidates = [];
 let aiCandidateTotal = 0;
 let currentAiEmailId = null;
+let aiBatchRunning = false;
+let lastOutputCacheVersion = null;
+
+// Keep tab switches instant without allowing operational polling to go stale.
+// Successful mutations clear this cache; concurrent reads for the same URL
+// share one promise so opening a page cannot duplicate Supabase work.
+const apiResponseCache = new Map();
+const apiRequestsInFlight = new Map();
+const apiCacheTtl = new Map([
+  ["/api/analytics", 60_000],
+  ["/api/applications", 30_000],
+  ["/api/board", 30_000],
+  ["/api/ai/reviews", 30_000],
+  ["/api/benchmark", 60_000],
+  ["/api/labels", 15_000],
+  ["/sample.json", 60_000],
+]);
+
+function responseFromCache(entry) {
+  return new Response(entry.body, {
+    status: entry.status,
+    headers: { "Content-Type": entry.contentType || "application/json; charset=utf-8", "X-App-Cache": "HIT" },
+  });
+}
+
+function cacheTtlForUrl(input) {
+  const url = new URL(typeof input === "string" ? input : input.url, window.location.href);
+  for (const [prefix, ttl] of apiCacheTtl) {
+    if (url.pathname === prefix || url.pathname.startsWith(`${prefix}/`)) return ttl;
+  }
+  return 0;
+}
+
+function invalidateApiCache() {
+  apiResponseCache.clear();
+}
+
+async function apiFetch(input, init = {}) {
+  const method = String(init.method || (typeof input === "string" ? "GET" : input.method) || "GET").toUpperCase();
+  if (method !== "GET") {
+    const response = await window.fetch(input, init);
+    if (response.ok) invalidateApiCache();
+    return response;
+  }
+  const ttl = cacheTtlForUrl(input);
+  if (!ttl) return window.fetch(input, init);
+  const url = new URL(typeof input === "string" ? input : input.url, window.location.href).toString();
+  const cached = apiResponseCache.get(url);
+  if (cached && cached.expiresAt > Date.now()) return responseFromCache(cached);
+  const pending = apiRequestsInFlight.get(url);
+  if (pending) return cached ? responseFromCache(cached) : responseFromCache(await pending);
+  const request = window.fetch(input, { ...init, cache: "no-store" }).then(async (response) => {
+    const entry = {
+      status: response.status,
+      contentType: response.headers.get("Content-Type"),
+      body: await response.text(),
+      expiresAt: Date.now() + ttl,
+    };
+    if (response.ok) apiResponseCache.set(url, entry);
+    return entry;
+  }).catch((error) => {
+    if (cached) return cached;
+    throw error;
+  }).finally(() => apiRequestsInFlight.delete(url));
+  apiRequestsInFlight.set(url, request);
+  // Serve a previously loaded page immediately while its expired entry is
+  // refreshed in the background. Mutations clear stale entries entirely.
+  if (cached) return responseFromCache(cached);
+  return responseFromCache(await request);
+}
 
 const categoryDescriptions = {
   applied: "Application received",
@@ -172,6 +256,10 @@ const categoryDescriptions = {
   uncertain: "Not enough evidence",
 };
 
+const boardCategoryOrder = ["reply_needed", "interview_assessment", "offer", "applied", "outreach", "rejected", "other", "uncertain"];
+const boardPageSize = 30;
+const applicationPageSize = 30;
+
 function displayCategory(category) {
   return category ? category.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Unclassified";
 }
@@ -183,19 +271,23 @@ function displayPercent(value) {
 function switchView(view, mode = null) {
   const labActive = view === "lab";
   const applicationBoardActive = view === "application_board";
+  const aiActive = view === "ai";
   if (labActive && ["labels", "quality", "performance"].includes(mode)) currentLabMode = mode;
   if (applicationBoardActive && ["emails", "applications"].includes(mode)) currentBoardMode = mode;
+  if (aiActive && ["brain", "chat"].includes(mode)) currentAiMode = mode;
   const benchmarkActive = labActive && currentLabMode === "quality";
   const reviewActive = labActive && currentLabMode === "labels";
   const commandActive = view === "command";
   const battlegroundActive = labActive && currentLabMode === "performance";
   const boardActive = applicationBoardActive && currentBoardMode === "emails";
   const analyticsActive = view === "analytics";
-  const aiActive = view === "ai";
+  const aiBrainActive = aiActive && currentAiMode === "brain";
+  const aiChatActive = aiActive && currentAiMode === "chat";
   const applicationsActive = applicationBoardActive && currentBoardMode === "applications";
   app.classList.toggle("benchmark-mode", !reviewActive);
   app.classList.toggle("lab-mode", labActive);
   app.classList.toggle("board-mode", applicationBoardActive);
+  app.classList.toggle("ai-mode", aiActive);
   reviewSidebar.hidden = !reviewActive;
   reviewReader.hidden = !reviewActive;
   reviewClassifier.hidden = !reviewActive;
@@ -205,9 +297,12 @@ function switchView(view, mode = null) {
   boardView.hidden = !boardActive;
   analyticsView.hidden = !analyticsActive;
   aiView.hidden = !aiActive;
+  aiBrainWorkspace.hidden = !aiBrainActive;
+  aiChatWorkspace.hidden = !aiChatActive;
   applicationsView.hidden = !applicationsActive;
   labSwitch.hidden = !labActive;
   boardSwitch.hidden = !applicationBoardActive;
+  aiSwitch.hidden = !aiActive;
   topActions.hidden = !reviewActive;
   progressBlock.hidden = !reviewActive;
   for (const tab of viewTabs) {
@@ -225,6 +320,11 @@ function switchView(view, mode = null) {
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
   }
+  for (const tab of aiTabs) {
+    const active = tab.dataset.aiMode === currentAiMode;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  }
   if (benchmarkActive) void loadBenchmark();
   window.clearInterval(commandPollTimer);
   window.clearInterval(battlegroundPollTimer);
@@ -239,7 +339,7 @@ function switchView(view, mode = null) {
   if (boardActive) void loadBoard();
   if (analyticsActive) void loadAnalytics();
   if (applicationsActive) void loadApplications();
-  if (aiActive) void loadAiReviews();
+  if (aiBrainActive) void loadAiReviews();
 }
 
 function navigateToView(view) {
@@ -250,6 +350,10 @@ function navigateToView(view) {
   }
   if (safeView === "application_board") {
     navigateToBoard(currentBoardMode);
+    return;
+  }
+  if (safeView === "ai") {
+    navigateToAi(currentAiMode);
     return;
   }
   if (window.location.hash !== `#${safeView}`) window.location.hash = safeView;
@@ -268,6 +372,13 @@ function navigateToLab(mode) {
   const hash = `#lab-${safeMode}`;
   if (window.location.hash !== hash) window.location.hash = hash;
   else switchView("lab", safeMode);
+}
+
+function navigateToAi(mode) {
+  const safeMode = ["brain", "chat"].includes(mode) ? mode : "brain";
+  const hash = `#ai-${safeMode}`;
+  if (window.location.hash !== hash) window.location.hash = hash;
+  else switchView("ai", safeMode);
 }
 
 function routeFromHash() {
@@ -289,12 +400,14 @@ function routeFromHash() {
     applications: "applications",
   };
   if (hash in boardRoutes) return { view: "application_board", boardMode: boardRoutes[hash] };
-  return { view: ["command", "analytics", "ai"].includes(hash) ? hash : "command" };
+  const aiRoutes = { ai: "brain", "ai-brain": "brain", "ai-chat": "chat" };
+  if (hash in aiRoutes) return { view: "ai", aiMode: aiRoutes[hash] };
+  return { view: ["command", "analytics"].includes(hash) ? hash : "command" };
 }
 
 function applyRouteFromHash() {
   const route = routeFromHash();
-  switchView(route.view, route.labMode || route.boardMode);
+  switchView(route.view, route.labMode || route.boardMode || route.aiMode);
 }
 
 function formatMilliseconds(value) {
@@ -474,7 +587,7 @@ function renderBattleground(report) {
 
 async function loadBattleground() {
   try {
-    const response = await fetch("/api/battleground", { cache: "no-store" });
+    const response = await apiFetch("/api/battleground", { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Could not load Battleground");
     renderBattleground(payload.report);
@@ -494,7 +607,7 @@ async function startBattleground(event) {
   battlegroundStatus.classList.remove("error");
   battlegroundStatus.textContent = "Selecting a fresh random pool…";
   try {
-    const response = await fetch("/api/battleground", {
+    const response = await apiFetch("/api/battleground", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -526,24 +639,24 @@ function element(tag, className, text) {
 
 function renderBoardList() {
   boardList.replaceChildren();
-  boardCount.textContent = `${boardEmails.length} emails`;
-  if (!boardEmails.length) {
-    boardList.append(element("p", "board-empty", "No emails match this category."));
-    return;
-  }
   const visibleCategories = boardCategory.value === "all"
-    ? Object.keys(categoryDescriptions)
+    ? boardCategoryOrder
     : [boardCategory.value];
+  const total = visibleCategories.reduce((sum, category) => sum + Number(boardLaneState[category]?.total || 0), 0);
+  boardCount.textContent = `${total.toLocaleString()} emails · ${boardEmails.length.toLocaleString()} loaded`;
   for (const category of visibleCategories) {
-    const emails = boardEmails.filter((email) => email.effective_category === category);
+    const state = boardLaneState[category] || { items: [], total: 0, hasMore: false, loading: true, error: null };
+    const emails = state.items;
     const lane = element("section", `board-lane category-${category}`);
     const laneHeading = element("header", "board-lane-heading");
     laneHeading.append(
       element("strong", "", displayCategory(category)),
-      element("span", "", String(emails.length)),
+      element("span", "", state.loading && !emails.length ? "…" : Number(state.total || 0).toLocaleString()),
     );
     const cards = element("div", "board-lane-cards");
-    if (!emails.length) cards.append(element("p", "board-lane-empty", "No emails"));
+    if (state.error) cards.append(element("p", "board-lane-empty error", state.error));
+    else if (state.loading && !emails.length) cards.append(element("p", "board-lane-empty", "Loading recent emails…"));
+    else if (!emails.length) cards.append(element("p", "board-lane-empty", "No emails"));
     for (const email of emails) {
       const replyState = category === "reply_needed"
         ? email.reply_draft_status === "reviewed" ? " reply-reviewed" : email.reply_draft_status ? " reply-drafted" : " reply-waiting"
@@ -562,6 +675,13 @@ function renderBoardList() {
         button.addEventListener("click", () => void loadBoardEmail(email.email_id));
       }
       cards.append(button);
+    }
+    if (state.hasMore) {
+      const more = element("button", "lane-load-more", state.loading ? "Loading…" : `Load ${Math.min(boardPageSize, state.total - emails.length)} more`);
+      more.type = "button";
+      more.disabled = state.loading;
+      more.addEventListener("click", () => void loadBoardLane(category, true));
+      cards.append(more);
     }
     lane.append(laneHeading, cards);
     boardList.append(lane);
@@ -613,7 +733,7 @@ function renderBoardDetail(email) {
     correctionButton.disabled = true;
     correctionStatus.textContent = "Saving…";
     try {
-      const response = await fetch("/api/board/correction", {
+      const response = await apiFetch("/api/board/correction", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email_id: email.id, category: correctionSelect.value, notes: correctionNotes.value }),
@@ -665,7 +785,7 @@ function renderBoardDetail(email) {
       draftStatus.classList.remove("error");
       draftStatus.textContent = "Generating a factual draft…";
       try {
-        const response = await fetch("/api/board/draft", {
+        const response = await apiFetch("/api/board/draft", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email_id: email.id, instructions: profile.value }),
@@ -689,7 +809,7 @@ function renderBoardDetail(email) {
       draftStatus.classList.remove("error");
       draftStatus.textContent = "Saving your reviewed version…";
       try {
-        const response = await fetch("/api/board/draft/save", {
+        const response = await apiFetch("/api/board/draft/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email_id: email.id, subject: draftSubject.value, body: draftBody.value }),
@@ -726,7 +846,7 @@ async function openReplyWorkspace(emailId) {
   replyStreamStatus.textContent = "Loading saved context…";
   replyDialog.showModal();
   try {
-    const response = await fetch(`/api/board/email?id=${encodeURIComponent(emailId)}`, { cache: "no-store" });
+    const response = await apiFetch(`/api/board/email?id=${encodeURIComponent(emailId)}`, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Could not load email");
     replyEmail = payload.email;
@@ -755,7 +875,7 @@ async function generateStreamingReply() {
   replyStreamStatus.classList.remove("error");
   replyStreamStatus.textContent = "GPT-4o Mini is drafting…";
   try {
-    const response = await fetch("/api/board/draft/stream", {
+    const response = await apiFetch("/api/board/draft/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email_id: replyEmail.id, instructions: replyInstructions.value, model: replyModel.value }),
@@ -798,7 +918,7 @@ async function saveReplyDraft() {
   const button = document.querySelector("#saveReply");
   button.disabled = true;
   try {
-    const response = await fetch("/api/board/draft/save", {
+    const response = await apiFetch("/api/board/draft/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email_id: replyEmail.id, subject: replySubject.value, body: replyBody.value }),
@@ -820,7 +940,7 @@ async function loadBoardEmail(emailId) {
   renderBoardList();
   boardDetail.replaceChildren(element("p", "board-empty", "Loading email context…"));
   try {
-    const response = await fetch(`/api/board/email?id=${encodeURIComponent(emailId)}`, { cache: "no-store" });
+    const response = await apiFetch(`/api/board/email?id=${encodeURIComponent(emailId)}`, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Could not load email");
     renderBoardDetail(payload.email);
@@ -829,31 +949,45 @@ async function loadBoardEmail(emailId) {
   }
 }
 
-async function loadBoard(selectFirst = false) {
+function syncBoardEmails() {
+  boardEmails = Object.values(boardLaneState).flatMap((state) => state.items || []);
+}
+
+async function loadBoardLane(category, append = false, renderImmediately = true) {
+  const state = boardLaneState[category] || { items: [], total: 0, hasMore: false, loading: false, error: null };
+  state.loading = true;
+  state.error = null;
+  boardLaneState[category] = state;
+  if (renderImmediately) renderBoardList();
   try {
-    const rows = [];
-    let offset = 0;
-    let payload;
-    do {
-      const response = await fetch(`/api/board?limit=1000&offset=${offset}&category=${encodeURIComponent(boardCategory.value)}&action=${encodeURIComponent(boardAction.value)}`, { cache: "no-store" });
-      payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Could not load Email Board");
-      rows.push(...(payload.emails || []));
-      offset += payload.emails?.length || 0;
-    } while (payload.has_more && payload.emails?.length);
-    boardEmails = rows;
-    boardReplyProfile = payload?.reply_profile || "";
-    boardReplyReady = Boolean(payload?.reply_provider_ready);
-    boardReplyModels = payload?.reply_models || [];
-    if (!boardEmails.some((email) => email.email_id === boardCurrentEmailId)) {
-      boardCurrentEmailId = null;
-      boardDetail.replaceChildren(element("p", "board-empty", "Choose a card to inspect the email and correct its decision."));
-    }
-    renderBoardList();
-    if (selectFirst && !boardCurrentEmailId && boardEmails[0]) await loadBoardEmail(boardEmails[0].email_id);
+    const offset = append ? state.items.length : 0;
+    const response = await apiFetch(`/api/board?limit=${boardPageSize}&offset=${offset}&category=${encodeURIComponent(category)}&action=${encodeURIComponent(boardAction.value)}`, { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `Could not load ${displayCategory(category)}`);
+    state.items = append ? [...state.items, ...(payload.emails || [])] : (payload.emails || []);
+    state.total = Number(payload.total || 0);
+    state.hasMore = Boolean(payload.has_more);
+    boardReplyProfile = payload.reply_profile || boardReplyProfile;
+    boardReplyReady = Boolean(payload.reply_provider_ready);
+    boardReplyModels = payload.reply_models || boardReplyModels;
   } catch (error) {
-    boardList.replaceChildren(element("p", "board-empty error", error instanceof Error ? error.message : String(error)));
+    state.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    state.loading = false;
+    syncBoardEmails();
+    if (renderImmediately) renderBoardList();
   }
+}
+
+async function loadBoard(selectFirst = false) {
+  const categories = boardCategory.value === "all" ? boardCategoryOrder : [boardCategory.value];
+  boardLaneState = Object.fromEntries(categories.map((category) => [category, { items: [], total: 0, hasMore: false, loading: true, error: null }]));
+  boardEmails = [];
+  renderBoardList();
+  await Promise.all(categories.map((category) => loadBoardLane(category, false, false)));
+  syncBoardEmails();
+  renderBoardList();
+  if (selectFirst && !boardCurrentEmailId && boardEmails[0]) await loadBoardEmail(boardEmails[0].email_id);
 }
 
 const analyticsPalette = {
@@ -1003,7 +1137,7 @@ function renderConfidenceDonut(items) {
   analyticsConfidence.append(visual, insight);
 }
 
-function renderAnalyticsActivity(activity) {
+function renderAnalyticsActivity(activity, period = { label: "Last 30 days", granularity: "day" }) {
   analyticsActivity.replaceChildren();
   const maximum = Math.max(1, ...activity.map((item) => item.count));
   const total = activity.reduce((sum, item) => sum + item.count, 0);
@@ -1015,7 +1149,7 @@ function renderAnalyticsActivity(activity) {
   const y = (count) => height - pad.bottom - (count / maximum) * (height - pad.top - pad.bottom);
   const points = activity.map((item, index) => `${x(index)},${y(item.count)}`).join(" ");
   const area = `${pad.left},${height - pad.bottom} ${points} ${x(activity.length - 1)},${height - pad.bottom}`;
-  const svg = svgElement("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": `Thirty day email activity, ${total} emails total` });
+  const svg = svgElement("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": `${period.label} email activity, ${total} emails total` });
   const defs = svgElement("defs");
   const gradient = svgElement("linearGradient", { id: "activityGradient", x1: "0", y1: "0", x2: "0", y2: "1" });
   gradient.append(svgElement("stop", { offset: "0%", "stop-color": "#315efb", "stop-opacity": ".28" }), svgElement("stop", { offset: "100%", "stop-color": "#315efb", "stop-opacity": ".02" }));
@@ -1044,7 +1178,10 @@ function renderAnalyticsActivity(activity) {
       guide.setAttribute("x2", String(x(index)));
       tooltip.hidden = false;
       tooltip.style.left = `${(x(index) / width) * 100}%`;
-      tooltip.innerHTML = `<strong>${item.count.toLocaleString()} emails</strong><span>${new Date(`${item.date}T00:00:00Z`).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</span>`;
+      const dateLabel = new Date(`${item.date}T00:00:00Z`).toLocaleDateString([], period.granularity === "month"
+        ? { month: "long", year: "numeric", timeZone: "UTC" }
+        : { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+      tooltip.innerHTML = `<strong>${item.count.toLocaleString()} emails</strong><span>${dateLabel}</span>`;
       svg.querySelectorAll(".activity-point").forEach((node) => node.classList.toggle("is-active", node === circle));
     };
     hit.addEventListener("mouseenter", show);
@@ -1168,7 +1305,12 @@ function renderAnalytics(snapshot) {
   analyticsMetric("Uncertain", displayPercent(snapshot.summary.uncertain_rate), `${snapshot.summary.uncertain.toLocaleString()} emails below threshold`, "uncertain", snapshot.summary.uncertain_rate);
   analyticsMetric("Human corrections", snapshot.summary.human_corrections.toLocaleString(), `${snapshot.summary.human_disagreements.toLocaleString()} changed Jev decisions`, "human", snapshot.summary.human_corrections / classified);
   renderAnalyticsNarrative(snapshot);
-  renderAnalyticsActivity(snapshot.activity);
+  const period = snapshot.period || { key: "30", label: "Last 30 days", granularity: "day" };
+  document.querySelector("#analyticsActivityTitle").textContent = period.key === "all" ? "Monthly email activity" : `${period.key}-day email activity`;
+  document.querySelector("#analyticsActivitySubtitle").textContent = period.granularity === "month"
+    ? "Hover across the trend to inspect each month since your first tracked email"
+    : "Hover across the trend to inspect any day";
+  renderAnalyticsActivity(snapshot.activity, period);
   document.querySelector("#analyticsCategoryTotal").textContent = `${snapshot.summary.classified_emails.toLocaleString()} emails`;
   document.querySelector("#analyticsActionTotal").textContent = `${snapshot.summary.needs_action.toLocaleString()} actionable`;
   document.querySelector("#analyticsConfidenceTotal").textContent = `${snapshot.summary.uncertain.toLocaleString()} uncertain`;
@@ -1327,7 +1469,7 @@ async function loadAnalytics() {
   analyticsStatus.textContent = "Loading live mailbox analytics…";
   analyticsContent.hidden = true;
   try {
-    const response = await fetch("/api/analytics", { cache: "no-store" });
+    const response = await apiFetch(`/api/analytics?range=${encodeURIComponent(analyticsRange.value)}`, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Could not load analytics");
     renderAnalytics(payload);
@@ -1359,15 +1501,34 @@ function applicationCard(application) {
   star.addEventListener("click", async () => {
     star.disabled = true;
     try {
-      const response = await fetch("/api/applications/star", {
+      const response = await apiFetch("/api/applications/star", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ application_id: application.id, starred: !application.is_starred }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Could not save star");
-      application.is_starred = payload.application.is_starred;
-      application.starred_at = payload.application.starred_at;
+      for (const laneState of Object.values(applicationLaneState)) {
+        for (const item of laneState.items || []) {
+          if (item.id === application.id) {
+            item.is_starred = payload.application.is_starred;
+            item.starred_at = payload.application.starred_at;
+          }
+        }
+      }
+      const starred = applicationLaneState.starred;
+      if (starred) {
+        const existingIndex = starred.items.findIndex((item) => item.id === application.id);
+        if (payload.application.is_starred && existingIndex < 0) {
+          starred.items.unshift({ ...application, is_starred: true, starred_at: payload.application.starred_at });
+          starred.total += 1;
+        } else if (!payload.application.is_starred && existingIndex >= 0) {
+          starred.items.splice(existingIndex, 1);
+          starred.total = Math.max(0, starred.total - 1);
+        }
+        starred.hasMore = starred.items.length < starred.total;
+      }
+      syncApplications();
       renderApplicationBoard();
     } catch (error) {
       window.alert(error instanceof Error ? error.message : String(error));
@@ -1380,17 +1541,29 @@ function applicationCard(application) {
 
 function renderApplicationBoard() {
   applicationBoard.replaceChildren();
-  applicationCount.textContent = `${applications.length.toLocaleString()} application${applications.length === 1 ? "" : "s"}`;
-  for (const status of ["starred", ...applicationStatuses]) {
+  const statuses = applicationStatus.value === "all" ? ["starred", ...applicationStatuses] : [applicationStatus.value];
+  const total = applicationStatus.value === "all"
+    ? applicationStatuses.reduce((sum, status) => sum + Number(applicationLaneState[status]?.total || 0), 0)
+    : Number(applicationLaneState[applicationStatus.value]?.total || 0);
+  applicationCount.textContent = `${total.toLocaleString()} applications · ${applications.length.toLocaleString()} loaded`;
+  for (const status of statuses) {
+    const state = applicationLaneState[status] || { items: [], total: 0, hasMore: false, loading: true, error: null };
     const lane = element("section", `application-lane status-${status}`);
-    const laneApplications = status === "starred"
-      ? applications.filter((application) => application.is_starred)
-      : applications.filter((application) => application.current_status === status);
+    const laneApplications = state.items;
     const heading = element("header", "application-lane-heading");
-    heading.append(element("strong", "", status === "starred" ? "★ Starred" : displayCategory(status)), element("span", "", laneApplications.length.toLocaleString()));
+    heading.append(element("strong", "", status === "starred" ? "★ Starred" : displayCategory(status)), element("span", "", state.loading && !laneApplications.length ? "…" : Number(state.total || 0).toLocaleString()));
     const cards = element("div", "application-lane-cards");
-    if (!laneApplications.length) cards.append(element("p", "board-lane-empty", "No applications"));
+    if (state.error) cards.append(element("p", "board-lane-empty error", state.error));
+    else if (state.loading && !laneApplications.length) cards.append(element("p", "board-lane-empty", "Loading recent applications…"));
+    else if (!laneApplications.length) cards.append(element("p", "board-lane-empty", status === "starred" ? "Star important applications to collect them here." : "No applications in this lane."));
     else for (const application of laneApplications) cards.append(applicationCard(application));
+    if (state.hasMore) {
+      const more = element("button", "lane-load-more", state.loading ? "Loading…" : `Load ${Math.min(applicationPageSize, state.total - laneApplications.length)} more`);
+      more.type = "button";
+      more.disabled = state.loading;
+      more.addEventListener("click", () => void loadApplicationLane(status, true));
+      cards.append(more);
+    }
     lane.append(heading, cards);
     applicationBoard.append(lane);
   }
@@ -1495,7 +1668,7 @@ function renderApplicationDetail(payload) {
     saveStatus.classList.remove("error");
     saveStatus.textContent = "Saving…";
     try {
-      const response = await fetch("/api/applications/update", {
+      const response = await apiFetch("/api/applications/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1527,7 +1700,7 @@ async function loadApplicationDetail(applicationId) {
   renderApplicationBoard();
   applicationDetail.replaceChildren(element("p", "board-empty", "Loading application evidence…"));
   try {
-    const response = await fetch(`/api/applications/detail?id=${encodeURIComponent(applicationId)}`, { cache: "no-store" });
+    const response = await apiFetch(`/api/applications/detail?id=${encodeURIComponent(applicationId)}`, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Could not load application");
     renderApplicationDetail(payload);
@@ -1536,26 +1709,149 @@ async function loadApplicationDetail(applicationId) {
   }
 }
 
-async function loadApplications() {
+function syncApplications() {
+  const seen = new Set();
+  applications = Object.values(applicationLaneState).flatMap((state) => state.items || []).filter((application) => {
+    if (seen.has(application.id)) return false;
+    seen.add(application.id);
+    return true;
+  });
+}
+
+async function loadApplicationLane(status, append = false, renderImmediately = true) {
+  const state = applicationLaneState[status] || { items: [], total: 0, hasMore: false, loading: false, error: null };
+  state.loading = true;
+  state.error = null;
+  applicationLaneState[status] = state;
+  if (renderImmediately) renderApplicationBoard();
   try {
-    const rows = [];
-    let offset = 0;
-    let payload;
-    do {
-      const response = await fetch(`/api/applications?limit=1000&offset=${offset}&status=${encodeURIComponent(applicationStatus.value)}`, { cache: "no-store" });
-      payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Could not load applications");
-      rows.push(...(payload.applications || []));
-      offset += payload.applications?.length || 0;
-    } while (payload.has_more && payload.applications?.length);
-    applications = rows;
-    if (!applications.some((application) => application.id === currentApplicationId)) {
-      currentApplicationId = null;
-      applicationDetail.replaceChildren(element("p", "board-empty", "Choose an application to inspect its lifecycle and email evidence."));
-    }
-    renderApplicationBoard();
+    const offset = append ? state.items.length : 0;
+    const params = status === "starred"
+      ? `starred=true`
+      : `status=${encodeURIComponent(status)}`;
+    const response = await apiFetch(`/api/applications?limit=${applicationPageSize}&offset=${offset}&${params}`, { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `Could not load ${displayCategory(status)} applications`);
+    state.items = append ? [...state.items, ...(payload.applications || [])] : (payload.applications || []);
+    state.total = Number(payload.total || 0);
+    state.hasMore = Boolean(payload.has_more);
   } catch (error) {
-    applicationBoard.replaceChildren(element("p", "board-empty error", error instanceof Error ? error.message : String(error)));
+    state.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    state.loading = false;
+    syncApplications();
+    if (renderImmediately) renderApplicationBoard();
+  }
+}
+
+async function loadApplications() {
+  const statuses = applicationStatus.value === "all" ? ["starred", ...applicationStatuses] : [applicationStatus.value];
+  applicationLaneState = Object.fromEntries(statuses.map((status) => [status, { items: [], total: 0, hasMore: false, loading: true, error: null }]));
+  applications = [];
+  renderApplicationBoard();
+  await Promise.all(statuses.map((status) => loadApplicationLane(status, false, false)));
+  syncApplications();
+  renderApplicationBoard();
+}
+
+async function reviewAiCandidate(candidate) {
+  const response = await apiFetch("/api/ai/review", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email_id: candidate.email_id, model: aiReviewModel.value }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "AI review failed");
+  candidate.llm_review_input = payload.input;
+  candidate.llm_review_output = payload.decision;
+  candidate.llm_review_category = payload.decision.category;
+  candidate.llm_review_confidence = payload.decision.confidence;
+  candidate.llm_review_should_override = payload.decision.should_override_jev;
+  candidate.llm_review_model = payload.model;
+  candidate.llm_reviewed_at = payload.reviewed_at;
+  return payload;
+}
+
+function laneAiCandidates() {
+  return aiCandidates.filter((candidate) => candidate.effective_category === aiLaneSelect.value);
+}
+
+function renderAiBrainMetrics() {
+  const rows = laneAiCandidates();
+  const reviewed = rows.filter((candidate) => candidate.llm_reviewed_at);
+  const reclassified = reviewed.filter((candidate) => candidate.llm_review_category && candidate.llm_review_category !== candidate.effective_category);
+  const applicationIds = new Set(rows.map((candidate) => candidate.current_application_id).filter(Boolean));
+  const alreadyGrouped = Math.max(0, rows.filter((candidate) => candidate.current_application_id).length - applicationIds.size);
+  const relationships = reviewed.filter((candidate) => Number(candidate.llm_review_output?.relationship_confidence || 0) >= 0.85
+    && candidate.llm_review_output?.related_application_id
+    && candidate.llm_review_output.related_application_id !== candidate.current_application_id);
+  const agreements = reviewed.filter((candidate) => candidate.llm_review_category === candidate.effective_category);
+  aiBrainMetrics.replaceChildren();
+  for (const [label, value] of [
+    ["Lane emails", rows.length],
+    ["Applications", applicationIds.size],
+    ["Already grouped", alreadyGrouped],
+    ["AI reviewed", reviewed.length],
+    ["Reclassify", reclassified.length],
+    ["Possible merges", relationships.length],
+  ]) {
+    const metric = element("article", "ai-brain-metric");
+    metric.append(element("span", "", label), element("strong", "", Number(value).toLocaleString()));
+    aiBrainMetrics.append(metric);
+  }
+  const pending = Math.max(0, rows.length - reviewed.length);
+  if (!aiBatchRunning) aiBatchStatus.textContent = `${agreements.length.toLocaleString()} agreements · ${pending.toLocaleString()} awaiting AI`;
+}
+
+async function runAiLaneReview() {
+  if (aiBatchRunning) return;
+  const lane = aiLaneSelect.value;
+  const allRows = laneAiCandidates();
+  const rows = aiLaneScope.value === "pending" ? allRows.filter((candidate) => !candidate.llm_reviewed_at) : allRows;
+  if (!rows.length) {
+    aiBatchProgress.style.width = "100%";
+    aiBatchStatus.textContent = aiLaneScope.value === "pending" ? "This lane has no pending AI reviews." : "This lane is empty.";
+    return;
+  }
+  aiBatchRunning = true;
+  runAiLane.disabled = true;
+  aiLaneSelect.disabled = true;
+  aiLaneScope.disabled = true;
+  aiBatchStatus.classList.remove("error");
+  let completed = 0;
+  let failed = 0;
+  let finalMessage = "";
+  aiBatchProgress.style.width = "0%";
+  aiBatchStatus.textContent = `Starting ${rows.length.toLocaleString()} ${displayCategory(lane)} reviews…`;
+  const pending = [...rows];
+  const worker = async () => {
+    while (pending.length) {
+      const candidate = pending.shift();
+      try {
+        await reviewAiCandidate(candidate);
+      } catch {
+        failed += 1;
+      } finally {
+        completed += 1;
+        aiBatchProgress.style.width = `${(completed / rows.length) * 100}%`;
+        aiBatchStatus.textContent = `${completed.toLocaleString()} / ${rows.length.toLocaleString()} reviewed${failed ? ` · ${failed} failed` : ""}`;
+        renderAiReviewQueue();
+      }
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(3, rows.length) }, () => worker()));
+    finalMessage = failed
+      ? `Lane review completed with ${failed.toLocaleString()} failures.`
+      : `Lane review complete: ${rows.length.toLocaleString()} decisions audited.`;
+  } finally {
+    aiBatchRunning = false;
+    runAiLane.disabled = false;
+    aiLaneSelect.disabled = false;
+    aiLaneScope.disabled = false;
+    renderAiReviewQueue();
+    aiBatchStatus.classList.toggle("error", failed > 0);
+    aiBatchStatus.textContent = finalMessage || `Lane review stopped after ${completed.toLocaleString()} decisions.`;
   }
 }
 
@@ -1587,19 +1883,7 @@ function renderAiReviewDetail(candidate) {
     status.classList.remove("error");
     status.textContent = "Reviewing category and application relationship…";
     try {
-      const response = await fetch("/api/ai/review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email_id: candidate.email_id, model: aiReviewModel.value }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "AI review failed");
-      candidate.llm_review_input = payload.input;
-      candidate.llm_review_output = payload.decision;
-      candidate.llm_review_category = payload.decision.category;
-      candidate.llm_review_confidence = payload.decision.confidence;
-      candidate.llm_review_model = payload.model;
-      candidate.llm_reviewed_at = payload.reviewed_at;
+      await reviewAiCandidate(candidate);
       renderAiReviewQueue();
       renderAiReviewDetail(candidate);
     } catch (error) {
@@ -1616,7 +1900,7 @@ function renderAiReviewDetail(candidate) {
     join.addEventListener("click", async () => {
       join.disabled = true;
       try {
-        const response = await fetch("/api/ai/relationship/apply", {
+        const response = await apiFetch("/api/ai/relationship/apply", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email_id: candidate.email_id, application_id: relationship.related_application_id }),
@@ -1636,23 +1920,44 @@ function renderAiReviewDetail(candidate) {
 
 function renderAiReviewQueue() {
   aiReviewQueue.replaceChildren();
-  aiReviewCount.textContent = `${aiCandidates.length.toLocaleString()} of ${aiCandidateTotal.toLocaleString()} candidates`;
+  const reviewPriority = (candidate) => {
+    const output = candidate.llm_review_output;
+    if (output?.related_application_id && Number(output.relationship_confidence || 0) >= 0.85) return 3;
+    if (candidate.llm_reviewed_at && candidate.llm_review_category !== candidate.effective_category) return 2;
+    if (!candidate.llm_reviewed_at) return 1;
+    return 0;
+  };
+  const visible = [...laneAiCandidates()].sort((left, right) => reviewPriority(right) - reviewPriority(left));
+  aiReviewCount.textContent = `${visible.length.toLocaleString()} ${displayCategory(aiLaneSelect.value)} candidates`;
   aiLaneSummary.replaceChildren();
   for (const category of ["reply_needed", "interview_assessment", "offer"]) {
     const rows = aiCandidates.filter((candidate) => candidate.effective_category === category);
     const reviewed = rows.filter((candidate) => candidate.llm_reviewed_at).length;
-    const summary = element("article", `ai-lane-card category-${category}`);
+    const summary = element("button", `ai-lane-card category-${category}${aiLaneSelect.value === category ? " active" : ""}`);
+    summary.type = "button";
     summary.append(element("span", "", displayCategory(category)), element("strong", "", rows.length.toLocaleString()), element("small", "", `${reviewed} AI reviewed`));
+    summary.addEventListener("click", () => {
+      aiLaneSelect.value = category;
+      currentAiEmailId = null;
+      aiReviewDetail.replaceChildren(element("p", "board-empty", "Select an email to inspect its structured review."));
+      renderAiReviewQueue();
+    });
     aiLaneSummary.append(summary);
   }
-  for (const candidate of aiCandidates) {
+  renderAiBrainMetrics();
+  if (!visible.length) aiReviewQueue.append(element("p", "board-empty", "No decisions are currently in this lane."));
+  for (const candidate of visible) {
     const button = element("button", `ai-review-row${candidate.email_id === currentAiEmailId ? " active" : ""}`);
     button.type = "button";
     button.append(
       element("span", `ai-review-dot${candidate.llm_reviewed_at ? " reviewed" : ""}`),
       element("strong", "", candidate.subject || "(no subject)"),
       element("small", "", `${displayCategory(candidate.effective_category)} · Jev ${displayPercent(candidate.category_top_probability)}`),
-      element("em", "", candidate.llm_reviewed_at ? `${displayCategory(candidate.llm_review_category)} · ${displayPercent(Number(candidate.llm_review_confidence))}` : "Awaiting AI"),
+      element("em", "", candidate.llm_reviewed_at
+        ? candidate.llm_review_output?.related_application_id && Number(candidate.llm_review_output?.relationship_confidence || 0) >= 0.85
+          ? "Possible duplicate"
+          : `${displayCategory(candidate.llm_review_category)} · ${displayPercent(Number(candidate.llm_review_confidence))}`
+        : "Awaiting AI"),
     );
     button.addEventListener("click", () => {
       renderAiReviewQueue();
@@ -1665,7 +1970,7 @@ function renderAiReviewQueue() {
 async function loadAiReviews() {
   aiReviewQueue.replaceChildren(element("p", "board-empty", "Loading targeted decisions…"));
   try {
-    const response = await fetch("/api/ai/reviews?limit=500", { cache: "no-store" });
+    const response = await apiFetch("/api/ai/reviews?limit=500", { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Could not load AI reviews");
     aiCandidates = payload.candidates || [];
@@ -1863,7 +2168,7 @@ async function loadBenchmark() {
   benchmarkContent.hidden = true;
   benchmarkEmpty.textContent = "Loading benchmark results…";
   try {
-    const response = await fetch(`/api/benchmark?scope=${benchmarkScope.value}`, { cache: "no-store" });
+    const response = await apiFetch(`/api/benchmark?scope=${benchmarkScope.value}`, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || `Benchmark request failed with status ${response.status}`);
     if (payload.status === "complete") {
@@ -2017,6 +2322,10 @@ function renderCommandPipeline(snapshot) {
   const automation = snapshot.automation || {};
   const ingestion = snapshot.ingestion;
   const outputs = snapshot.outputs;
+  if (outputs?.status === "succeeded" && outputs.finished_at && outputs.finished_at !== lastOutputCacheVersion) {
+    lastOutputCacheVersion = outputs.finished_at;
+    invalidateApiCache();
+  }
   const latestSync = (snapshot.sync_runs || [])[0];
   const runs = snapshot.runs || [];
   const activeRun = runs.find((run) => run.status === "queued" || run.status === "running");
@@ -2133,7 +2442,7 @@ async function publishCommandOutputs() {
     renderCommandPipeline(latestCommandSnapshot);
   }
   try {
-    const response = await fetch("/api/command/publish", { method: "POST" });
+    const response = await apiFetch("/api/command/publish", { method: "POST" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not publish pipeline outputs");
     if (latestCommandSnapshot) {
@@ -2164,7 +2473,7 @@ async function startGmailSync() {
     renderCommandPipeline(latestCommandSnapshot);
   }
   try {
-    const response = await fetch("/api/command/ingest", { method: "POST" });
+    const response = await apiFetch("/api/command/ingest", { method: "POST" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not start Gmail ingestion");
     commandStatus.textContent = "Gmail sync is running in the background. New-email counts update here automatically.";
@@ -2178,7 +2487,7 @@ async function startGmailSync() {
 
 async function loadCommandRuns() {
   try {
-    const response = await fetch("/api/command/status", { cache: "no-store" });
+    const response = await apiFetch("/api/command/status", { cache: "no-store" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not load classification runs");
     renderCommandPipeline(result);
@@ -2193,7 +2502,7 @@ async function startCommandRun() {
   commandStatus.textContent = "Creating durable run…";
   commandStatus.classList.remove("error");
   try {
-    const response = await fetch("/api/command/runs", {
+    const response = await apiFetch("/api/command/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(commandPayload()),
@@ -2229,7 +2538,7 @@ async function persistLabel(emailId) {
   const saveStatus = document.querySelector("#saveStatus");
   saveStatus.textContent = "Saving to labeled JSON…";
   try {
-    const response = await fetch("/api/labels", {
+    const response = await apiFetch("/api/labels", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2414,7 +2723,7 @@ async function addUniqueEmails() {
   resampleStatus.classList.remove("error");
   resampleStatus.textContent = "Reading Supabase and excluding previously sampled emails…";
   try {
-    const response = await fetch("/api/resample", {
+    const response = await apiFetch("/api/resample", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ count, strategy }),
@@ -2468,8 +2777,8 @@ function exportFile(type) {
 async function initialize() {
   try {
     const [sampleResponse, labelsResponse] = await Promise.all([
-      fetch("/sample.json", { cache: "no-store" }),
-      fetch("/api/labels", { cache: "no-store" }),
+      apiFetch("/sample.json", { cache: "no-store" }),
+      apiFetch("/api/labels", { cache: "no-store" }),
     ]);
     if (!sampleResponse.ok) throw new Error(`Sample request failed with status ${sampleResponse.status}`);
     if (!labelsResponse.ok) throw new Error(`Labels request failed with status ${labelsResponse.status}`);
@@ -2527,6 +2836,9 @@ async function initialize() {
     for (const tab of boardTabs) {
       tab.addEventListener("click", () => navigateToBoard(tab.dataset.boardMode));
     }
+    for (const tab of aiTabs) {
+      tab.addEventListener("click", () => navigateToAi(tab.dataset.aiMode));
+    }
     window.addEventListener("hashchange", applyRouteFromHash);
     document.querySelector("#refreshBenchmark").addEventListener("click", () => void loadBenchmark());
     benchmarkFilter.addEventListener("change", renderBenchmarkRows);
@@ -2556,13 +2868,24 @@ async function initialize() {
       boardCurrentEmailId = null;
       void loadBoard();
     });
-    document.querySelector("#refreshAnalytics").addEventListener("click", () => void loadAnalytics());
+    document.querySelector("#refreshAnalytics").addEventListener("click", () => {
+      invalidateApiCache();
+      void loadAnalytics();
+    });
+    analyticsRange.addEventListener("change", () => void loadAnalytics());
     document.querySelector("#refreshApplications").addEventListener("click", () => void loadApplications());
     applicationStatus.addEventListener("change", () => {
       currentApplicationId = null;
       void loadApplications();
     });
     document.querySelector("#refreshAi").addEventListener("click", () => void loadAiReviews());
+    aiLaneSelect.addEventListener("change", () => {
+      currentAiEmailId = null;
+      aiBatchProgress.style.width = "0%";
+      aiReviewDetail.replaceChildren(element("p", "board-empty", "Select an email to inspect its structured review."));
+      renderAiReviewQueue();
+    });
+    runAiLane.addEventListener("click", () => void runAiLaneReview());
     document.querySelector("#closeReplyDialog").addEventListener("click", () => replyDialog.close());
     document.querySelector("#generateReply").addEventListener("click", () => void generateStreamingReply());
     document.querySelector("#saveReply").addEventListener("click", () => void saveReplyDraft());

@@ -23,6 +23,7 @@ export interface LlmReviewInput extends ClassifiableEmail {
     company: string | null;
     role: string | null;
     latestSubject: string | null;
+    relationshipHint: "current_application" | "heuristic_candidate";
   }>;
 }
 
@@ -78,6 +79,7 @@ export const LLM_REVIEW_SYSTEM_PROMPT = [
   "interview_assessment includes interview scheduling, calendar invitations, coding tests, take-homes, screening bots, and assessments.",
   "offer requires explicit evidence that employment or contract terms are being offered; enthusiasm or next steps are not an offer.",
   "outreach is a cold or proactive contact and must not become ghosted merely because nobody replied.",
+  "The candidate marked current_application is the application's existing database membership. Return its ID when that membership is correct; this confirms an already-grouped relationship rather than proposing a duplicate merge.",
   "Choose a related_application_id only when company and role/requisition evidence show the same opportunity. Shared job-board threads alone are insufficient.",
   "Never invent a company, role, requisition, relationship, or action. Use uncertain when the evidence cannot support a reliable decision.",
 ].join(" ");

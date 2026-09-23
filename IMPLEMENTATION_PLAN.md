@@ -438,7 +438,7 @@ Confirmed corrections enter the next dataset version. Every changed criterion/ex
 
 ### Email Board
 
-Kanban lanes: Applied, Outreach, Reply Needed, Interview / Assessment, Offer, Rejected, Other, and Uncertain.
+Kanban lanes run horizontally with the action-heavy categories first: Reply Needed, Interview / Assessment, Offer, Applied, Outreach, Rejected, Other, and Uncertain. The browser fetches only the first 30 cards in each visible lane in parallel, retains the complete database count in every heading, and loads additional cards inside that lane on demand. This keeps the first render responsive without hiding older email decisions.
 
 Cards show subject, sender/company hint, date, next action, urgency, confidence, and direction. Opening a card shows full evidence and its Gmail link. Moving a card starts the manual correction flow; it does not mutate historical inference. Filters include result set, date, confidence, direction, category, and next action.
 
@@ -486,13 +486,13 @@ Gmail push notifications remain a later optimization. Hourly incremental history
 
 Status: complete. Migration 008 extends the existing `emails` and `applications` tables rather than creating more tables.
 
-- Jev remains the fast primary classifier. GPT-4o Mini reviews the high-value `reply_needed`, `interview_assessment`, and `offer` queue with a strict JSON schema.
+- Jev remains the fast primary classifier. **AI Brain** can review a complete `reply_needed`, `interview_assessment`, or `offer` lane (or only its pending entries) with GPT-4o Mini and a strict JSON schema. It summarizes agreements, proposed reclassifications, and high-confidence relationships that may indicate duplicate applications; each result remains individually inspectable.
 - The UI exposes the exact bounded input, schema-validated output, model, confidence, evidence, and whether the reviewer disagrees with Jev.
 - Application relationship recommendations require company plus role/requisition evidence. A shared Gmail or job-board thread is insufficient, and the user must explicitly confirm any join at 85% or higher relationship confidence.
 - The Reply Needed modal keeps the email and streamed draft side by side, restores saved drafts, supports configured model choices, and never sends mail.
 - Reply cards show whether a draft is waiting, suggested, or human-reviewed.
 - Application cards can be starred without changing their lifecycle status. Starred is a durable secondary view; the original card remains in its status lane.
-- Important application lanes appear first, wrap responsively, and do not require horizontal page scrolling.
+- Important application lanes appear first in one parallel horizontal board: Starred, Reply Needed, Interview / Assessment, Offer, Applied, Outreach, Rejected, and Ghosted. Each lane scrolls vertically, the board scrolls horizontally, and only the first 30 cards per lane are fetched until the user asks for more.
 - `npm run ai:evaluate -- --limit=20` evaluates the structured reviewer against the human-labeled high-value subset and writes a private JSON report. This is a measured advisory-model eval, not new Jev training.
 - The current mailbox was regrouped after the corrected outreach/ghosting rules: cold outreach remains Outreach, while Ghosted requires a real back-and-forth conversation ending in an unanswered outgoing message.
 
@@ -502,7 +502,7 @@ The OpenAI integration uses the Responses API with `store: false`, strict struct
 
 ## Phase 13 — AI Assistant / RAG roadmap
 
-This is intentionally deferred until classification and application grouping are reliable. A future **AI Assistant** will support questions such as “How many applications did I complete this month?” and “Show interviews needing action.” Its first version is read-only and will enter navigation only when functional.
+This is intentionally deferred until classification and application grouping are reliable. The separate **AI Chat** sub-tab establishes its product location without mixing it into AI Brain. A future read-only assistant will support questions such as “How many applications did I complete this month?” and “Show interviews needing action.”
 
 - Use safe SQL/query tools for structured counts, filters, and aggregations.
 - Use retrieval over email/application text only for semantic evidence questions.
@@ -512,7 +512,7 @@ This is intentionally deferred until classification and application grouping are
 - Do not let the assistant send, delete, relabel, or modify email initially.
 - Add vector storage only if measured semantic retrieval quality justifies it; Supabase `pgvector` is the first option before another datastore.
 
-This feature remains roadmap/technical debt. The dashboard includes only a disabled visual shell so the future product location is clear; it does not pretend to answer mailbox questions yet.
+This feature remains roadmap/technical debt. The AI Chat sub-tab includes only a disabled visual shell so the future product location is clear; it does not pretend to answer mailbox questions yet.
 
 ---
 

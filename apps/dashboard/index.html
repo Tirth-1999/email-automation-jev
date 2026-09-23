@@ -34,6 +34,10 @@
           <button class="lab-tab active" data-board-mode="emails" type="button" role="tab" aria-selected="true"><span>1</span> Emails</button>
           <button class="lab-tab" data-board-mode="applications" type="button" role="tab" aria-selected="false"><span>2</span> Applications</button>
         </nav>
+        <nav id="aiSwitch" class="lab-switch ai-switch" role="tablist" aria-label="AI workspace mode" hidden>
+          <button class="lab-tab active" data-ai-mode="brain" type="button" role="tab" aria-selected="true"><span>1</span> AI Brain</button>
+          <button class="lab-tab" data-ai-mode="chat" type="button" role="tab" aria-selected="false"><span>2</span> AI Chat</button>
+        </nav>
       </header>
 
       <aside id="reviewSidebar" class="sidebar">
@@ -309,7 +313,10 @@
             <h2>Analytics</h2>
             <p>Live aggregates from the classified mailbox, durable production runs, human corrections, and the current held-out Jev benchmark. Click a category or action to inspect its source emails.</p>
           </div>
-          <button id="refreshAnalytics" class="button secondary" type="button">Refresh</button>
+          <div class="board-heading-actions analytics-heading-actions">
+            <label class="analytics-range-control"><span>Time range</span><select id="analyticsRange" aria-label="Analytics time range"><option value="30">Last 30 days</option><option value="60">Last 60 days</option><option value="90">Last 90 days</option><option value="all">All time</option></select></label>
+            <button id="refreshAnalytics" class="button secondary" type="button">Refresh</button>
+          </div>
         </section>
         <p id="analyticsStatus" class="analytics-status" aria-live="polite">Loading analytics…</p>
         <section id="analyticsContent" hidden>
@@ -321,7 +328,7 @@
             <p id="lifecycleEmpty" class="analytics-empty" hidden>Group the classified emails to generate application lifecycle paths.</p>
           </section>
           <section class="analytics-panel analytics-activity-panel">
-            <div class="panel-heading"><div><h3>30-day email activity</h3><small>Hover across the trend to inspect any day</small></div><span id="analyticsActivityTotal"></span></div>
+            <div class="panel-heading"><div><h3 id="analyticsActivityTitle">30-day email activity</h3><small id="analyticsActivitySubtitle">Hover across the trend to inspect any day</small></div><span id="analyticsActivityTotal"></span></div>
             <div id="analyticsActivity" class="analytics-activity" aria-label="Email activity over the last 30 days"></div>
           </section>
           <div class="analytics-grid">
@@ -378,26 +385,44 @@
       </main>
 
       <main id="aiView" class="ai-view" hidden>
-        <section class="command-heading">
-          <div>
-            <p class="eyebrow">AI review · High-value decisions</p>
-            <h2>AI workspace</h2>
-            <p>Jev remains the fast primary classifier. This workspace uses a structured LLM review for Reply Needed, Interview / Assessment, and Offer decisions, while preserving both judgments.</p>
-          </div>
-          <button id="refreshAi" class="button secondary" type="button">Refresh queue</button>
-        </section>
-        <section class="ai-layout">
-          <section class="command-panel ai-review-panel">
-            <div class="panel-heading"><div><h3>Decision review queue</h3><small>Choose an entry to inspect its exact JSON contract</small></div><span id="aiReviewCount">0 candidates</span></div>
-            <div id="aiLaneSummary" class="ai-lane-summary"></div>
-            <div id="aiReviewQueue" class="ai-review-queue"><p class="board-empty">Loading targeted decisions…</p></div>
+        <section id="aiBrainWorkspace" class="ai-workspace">
+          <section class="command-heading">
+            <div>
+              <p class="eyebrow">AI Brain · Lane intelligence</p>
+              <h2>Review a complete decision lane</h2>
+              <p>Use GPT-4o Mini as a structured second-stage reviewer across a full high-value lane. Jev remains preserved, while AI flags reclassifications and possible duplicate application relationships for confirmation.</p>
+            </div>
+            <button id="refreshAi" class="button secondary" type="button">Refresh workspace</button>
           </section>
-          <section class="command-panel ai-contract-panel">
-            <div class="panel-heading"><div><h3>Structured review</h3><small>Input and output are stored with the email</small></div><select id="aiReviewModel" aria-label="AI review model"></select></div>
-            <div id="aiReviewDetail" class="ai-review-detail"><p class="board-empty">Select an email to inspect or run its AI review.</p></div>
+          <section class="command-panel ai-brain-control">
+            <div class="ai-brain-copy"><span class="brain-orbit" aria-hidden="true"><i></i><i></i><i></i></span><div><h3>Lane reclassifier</h3><p>Review every decision in one lane with the same strict JSON contract, then inspect disagreements and relationship matches.</p></div></div>
+            <div class="ai-brain-fields">
+              <label><span>Lane</span><select id="aiLaneSelect"><option value="reply_needed">Reply Needed</option><option value="interview_assessment">Interview / Assessment</option><option value="offer">Offer</option></select></label>
+              <label><span>Scope</span><select id="aiLaneScope"><option value="pending">Only awaiting AI</option><option value="all">Review entire lane again</option></select></label>
+              <label><span>Model</span><select id="aiReviewModel" aria-label="AI review model"></select></label>
+              <button id="runAiLane" class="button primary" type="button">Review selected lane</button>
+            </div>
+            <div class="ai-batch-progress"><div class="run-progress"><span id="aiBatchProgress"></span></div><p id="aiBatchStatus" class="resample-status" aria-live="polite">Choose a lane to begin.</p></div>
+          </section>
+          <div id="aiLaneSummary" class="ai-lane-summary"></div>
+          <section class="ai-layout">
+            <section class="command-panel ai-review-panel">
+              <div class="panel-heading"><div><h3>Lane decisions</h3><small>Disagreements and possible duplicates stay visible for inspection</small></div><span id="aiReviewCount">0 candidates</span></div>
+              <div id="aiBrainMetrics" class="ai-brain-metrics"></div>
+              <div id="aiReviewQueue" class="ai-review-queue"><p class="board-empty">Loading targeted decisions…</p></div>
+            </section>
+            <section class="command-panel ai-contract-panel">
+              <div class="panel-heading"><div><h3>Individual evidence</h3><small>The exact structured input and output remain available</small></div></div>
+              <div id="aiReviewDetail" class="ai-review-detail"><p class="board-empty">Select an email to inspect or run its AI review.</p></div>
+            </section>
+          </section>
+        </section>
+        <section id="aiChatWorkspace" class="ai-workspace" hidden>
+          <section class="command-heading">
+            <div><p class="eyebrow">AI Chat · Mailbox questions</p><h2>Ask across your job search</h2><p>This separate workspace will become the conversational layer over applications, decisions, replies, and cited email evidence.</p></div>
           </section>
           <section class="command-panel ai-chat-shell">
-            <div class="panel-heading"><div><h3>AI Chat</h3><small>Mailbox questions are planned for the next iteration</small></div><span class="ai-coming-soon">Preview</span></div>
+            <div class="panel-heading"><div><h3>AI Chat</h3><small>Read-only mailbox conversation is the next integration</small></div><span class="ai-coming-soon">Preview</span></div>
             <div class="chat-preview">
               <div class="chat-message assistant">Ask questions across applications, replies, and outcomes from one place.</div>
               <div class="chat-suggestion-row"><span>How many interviews are active?</span><span>What needs a reply today?</span><span>Show my starred applications</span></div>

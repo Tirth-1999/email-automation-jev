@@ -103,3 +103,21 @@ test("benchmark analytics excludes correct predictions from confusion ranking", 
   });
   assert.equal(benchmark.top_confusions.some((item) => item.expected === item.predicted), false);
 });
+
+test("all-time analytics groups activity by calendar month", () => {
+  const now = new Date("2026-09-23T12:00:00.000Z");
+  const snapshot = buildAnalyticsSnapshot(
+    [
+      { email_id: "old", internal_date: "2026-07-02T10:00:00.000Z", direction: "incoming", effective_category: "applied", human_category: null, human_label_source: null, jev_decision: "applied", category_top_probability: 0.9, next_action: "no_action", should_draft: false },
+      { email_id: "new", internal_date: "2026-09-03T10:00:00.000Z", direction: "incoming", effective_category: "offer", human_category: null, human_label_source: null, jev_decision: "offer", category_top_probability: 0.9, next_action: "review_offer", should_draft: false },
+    ],
+    [],
+    [],
+    null,
+    now,
+    { key: "all", label: "All time", days: null, granularity: "month", from: null, to: now.toISOString() },
+  );
+
+  assert.deepEqual(snapshot.activity.map((item) => item.date), ["2026-07-01", "2026-08-01", "2026-09-01"]);
+  assert.deepEqual(snapshot.activity.map((item) => item.count), [1, 0, 1]);
+});

@@ -74,6 +74,11 @@ import {
   materializeApplications,
   type ApplicationMaterializationResult,
 } from "../../lib/application-materializer.js";
+import { createSnapshotCache } from "../../lib/snapshot-cache.js";
+import {
+  buildApplicationBoardSnapshot,
+  type ApplicationBoardSnapshot,
+} from "../../lib/application-board-cache.js";
 
 const port = Number.parseInt(process.env.LABELING_UI_PORT || "4173", 10);
 const projectRoot = process.cwd();
@@ -147,6 +152,77 @@ interface OutputRefreshJob {
 }
 let outputRefresh: OutputRefreshJob | null = null;
 let activeOutputRefresh: Promise<void> | null = null;
+type AnalyticsRange = "30" | "60" | "90" | "all";
+const analyticsRanges: AnalyticsRange[] = ["30", "60", "90", "all"];
+const analyticsSnapshotCache = createSnapshotCache(process.env.REDIS_URL?.trim() || "");
+let analyticsMaterializationInFlight: Promise<void> | null = null;
+const analyticsCacheKey = (range: AnalyticsRange) => `email-automation:analytics:v3:${range}`;
+const applicationBoardCacheKey = "email-automation:application-board:v1";
+let applicationBoardMaterializationInFlight: Promise<ApplicationBoardSnapshot> | null = null;
+
+function invalidateReadCaches(): void {
+  analyticsSnapshotCache.clearMemory();
+  void analyticsSnapshotCache.delete([...analyticsRanges.map(analyticsCacheKey), applicationBoardCacheKey]);
+}
+
+async function cachedAnalyticsSnapshot(range: AnalyticsRange): Promise<unknown> {
+  const cached = await analyticsSnapshotCache.get<unknown>(analyticsCacheKey(range));
+  if (cached) return cached;
+  if (!analyticsMaterializationInFlight) {
+    analyticsMaterializationInFlight = materializeAnalyticsSnapshots()
+      .finally(() => { analyticsMaterializationInFlight = null; });
+  }
+  await analyticsMaterializationInFlight;
+  const materialized = await analyticsSnapshotCache.get<unknown>(analyticsCacheKey(range));
+  if (!materialized) throw new Error(`Analytics snapshot ${range} was not materialized`);
+  return materialized;
+}
+
+async function refreshAnalyticsSnapshots(): Promise<void> {
+  await analyticsSnapshotCache.delete(analyticsRanges.map(analyticsCacheKey));
+  analyticsSnapshotCache.clearMemory();
+  if (!analyticsMaterializationInFlight) {
+    analyticsMaterializationInFlight = materializeAnalyticsSnapshots()
+      .finally(() => { analyticsMaterializationInFlight = null; });
+  }
+  await analyticsMaterializationInFlight;
+}
+
+async function cachedApplicationBoardSnapshot(): Promise<ApplicationBoardSnapshot> {
+  const cached = await analyticsSnapshotCache.get<ApplicationBoardSnapshot>(applicationBoardCacheKey);
+  if (cached) return cached;
+  if (!applicationBoardMaterializationInFlight) {
+    applicationBoardMaterializationInFlight = materializeApplicationBoardSnapshot()
+      .finally(() => { applicationBoardMaterializationInFlight = null; });
+  }
+  return applicationBoardMaterializationInFlight;
+}
+
+async function refreshApplicationBoardSnapshot(): Promise<void> {
+  await analyticsSnapshotCache.delete([applicationBoardCacheKey]);
+  if (!applicationBoardMaterializationInFlight) {
+    applicationBoardMaterializationInFlight = materializeApplicationBoardSnapshot()
+      .finally(() => { applicationBoardMaterializationInFlight = null; });
+  }
+  await applicationBoardMaterializationInFlight;
+}
+
+async function updateCachedApplicationStar(applicationId: string, starred: boolean, starredAt: string | null): Promise<void> {
+  const snapshot = await cachedApplicationBoardSnapshot();
+  let matched: Record<string, unknown> | null = null;
+  for (const applications of Object.values(snapshot.by_status)) {
+    const application = applications.find((candidate) => candidate.id === applicationId);
+    if (!application) continue;
+    application.is_starred = starred;
+    application.starred_at = starredAt;
+    matched = application;
+    break;
+  }
+  snapshot.starred = snapshot.starred.filter((application) => application.id !== applicationId);
+  if (starred && matched) snapshot.starred.unshift(matched);
+  snapshot.generated_at = new Date().toISOString();
+  await analyticsSnapshotCache.set(applicationBoardCacheKey, snapshot, 86_400);
+}
 
 function json(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, {
@@ -334,6 +410,7 @@ function startGmailIngestion() {
       onProgress: report,
     });
     emailCache = null;
+    invalidateReadCaches();
     return {
       ...result,
       gmailAddress: profile.emailAddress,
@@ -446,6 +523,7 @@ function startBackgroundClassification(runId: string, config: ClassificationWork
   if (activeClassificationRuns.has(runId)) return;
   const task = runClassification(database, runId, config)
     .then((completed) => {
+      invalidateReadCaches();
       if (["succeeded", "partial"].includes(completed.status)) startOutputRefresh(completed.id);
     })
     .catch((error: unknown) => console.error(`Classification run ${runId} failed:`, error))
@@ -479,6 +557,9 @@ function startOutputRefresh(sourceRunId: string | null = null): OutputRefreshJob
           outputRefresh.progress_percent = percent;
         },
       });
+      outputRefresh.stage = "building_analytics";
+      outputRefresh.progress_percent = 96;
+      await Promise.all([refreshAnalyticsSnapshots(), refreshApplicationBoardSnapshot()]);
       outputRefresh.status = "succeeded";
       outputRefresh.stage = "complete";
       outputRefresh.progress_percent = 100;
@@ -547,11 +628,11 @@ function battlegroundForBrowser(
   };
 }
 
-async function readAnalyticsEmails(): Promise<AnalyticsEmailRow[]> {
+async function readAnalyticsEmails(since: string | null): Promise<AnalyticsEmailRow[]> {
   const rows: AnalyticsEmailRow[] = [];
   const pageSize = 1_000;
   for (let offset = 0; ; offset += pageSize) {
-    const { data, error } = await database
+    let query = database
       .from("email_board")
       .select(
         "email_id,internal_date,direction,effective_category,human_category,human_label_source,jev_decision,category_top_probability,next_action,should_draft",
@@ -559,6 +640,8 @@ async function readAnalyticsEmails(): Promise<AnalyticsEmailRow[]> {
       .or("classification_id.not.is.null,human_category.not.is.null")
       .order("email_id")
       .range(offset, offset + pageSize - 1);
+    if (since) query = query.gte("internal_date", since);
+    const { data, error } = await query;
     if (error) throw new Error(`Could not load analytics emails: ${error.message}`);
     const page = (data || []) as AnalyticsEmailRow[];
     rows.push(...page);
@@ -584,7 +667,7 @@ async function readRunTokens(runIds: string[]): Promise<RunTokenRow[]> {
   }
 }
 
-async function readAnalyticsApplications(): Promise<Array<{
+async function readAnalyticsApplications(since: string | null): Promise<Array<{
   id: string;
   current_status: ApplicationStatus;
   company: string | null;
@@ -602,11 +685,13 @@ async function readAnalyticsApplications(): Promise<Array<{
   }> = [];
   const pageSize = 1_000;
   for (let offset = 0; ; offset += pageSize) {
-    const { data, error } = await database
+    let query = database
       .from("applications")
       .select("id,current_status,company,role,first_activity_at,last_activity_at")
       .order("last_activity_at", { ascending: false })
       .range(offset, offset + pageSize - 1);
+    if (since) query = query.gte("last_activity_at", since);
+    const { data, error } = await query;
     if (error) throw new Error(`Could not load application analytics: ${error.message}`);
     const page = (data || []) as typeof rows;
     rows.push(...page);
@@ -614,14 +699,61 @@ async function readAnalyticsApplications(): Promise<Array<{
   }
 }
 
-async function analyticsSnapshot() {
-  const [emails, runs, benchmarkExists] = await Promise.all([
-    readAnalyticsEmails(),
+async function materializeApplicationBoardSnapshot(): Promise<ApplicationBoardSnapshot> {
+  const boardRows: Array<Record<string, unknown>> = [];
+  const starRows: Array<Record<string, unknown>> = [];
+  const pageSize = 1_000;
+  await Promise.all([
+    (async () => {
+      for (let offset = 0; ; offset += pageSize) {
+        const { data, error } = await database
+          .from("application_board")
+          .select("*")
+          .order("last_activity_at", { ascending: false })
+          .range(offset, offset + pageSize - 1);
+        if (error) throw new Error(`Could not materialize Application Board: ${error.message}`);
+        const page = (data || []) as Array<Record<string, unknown>>;
+        boardRows.push(...page);
+        if (page.length < pageSize) break;
+      }
+    })(),
+    (async () => {
+      for (let offset = 0; ; offset += pageSize) {
+        const { data, error } = await database
+          .from("applications")
+          .select("id,is_starred,starred_at")
+          .order("last_activity_at", { ascending: false })
+          .range(offset, offset + pageSize - 1);
+        if (error) throw new Error(`Could not materialize application star state: ${error.message}`);
+        starRows.push(...((data || []) as Array<Record<string, unknown>>));
+        if ((data || []).length < pageSize) break;
+      }
+    })(),
+  ]);
+  const snapshot = buildApplicationBoardSnapshot(boardRows, starRows);
+  await analyticsSnapshotCache.set(applicationBoardCacheKey, snapshot, 86_400);
+  return snapshot;
+}
+
+interface AnalyticsSource {
+  emails: AnalyticsEmailRow[];
+  runs: Awaited<ReturnType<typeof listRecentClassificationRuns>>;
+  tokens: RunTokenRow[];
+  benchmark: ReturnType<typeof benchmarkForAnalytics> | null;
+  applications: Awaited<ReturnType<typeof readAnalyticsApplications>> | null;
+  now: Date;
+}
+
+async function loadAnalyticsSource(): Promise<AnalyticsSource> {
+  const now = new Date();
+  const [emails, runs, benchmarkExists, applications] = await Promise.all([
+    readAnalyticsEmails(null),
     listRecentClassificationRuns(database, 12),
     access(benchmarkPath).then(
       () => true,
       () => false,
     ),
+    readAnalyticsApplications(null).catch(() => null),
   ]);
   const [tokens, benchmarkReport] = await Promise.all([
     readRunTokens(runs.map((run) => run.id)),
@@ -630,13 +762,27 @@ async function analyticsSnapshot() {
   const benchmark = benchmarkReport?.classifier_version === CLASSIFIER_VERSION
     ? benchmarkForAnalytics(benchmarkReport)
     : null;
-  const emailAnalytics = buildAnalyticsSnapshot(emails, runs, tokens, benchmark);
-  let applicationRows: Awaited<ReturnType<typeof readAnalyticsApplications>>;
-  try {
-    applicationRows = await readAnalyticsApplications();
-  } catch {
-    return { ...emailAnalytics, application_lifecycle: null };
-  }
+  return { emails, runs, tokens, benchmark, applications, now };
+}
+
+function buildAnalyticsForRange(source: AnalyticsSource, range: AnalyticsRange) {
+  const { now, runs, tokens, benchmark } = source;
+  const days = range === "all" ? null : Number(range);
+  const sinceDate = days === null ? null : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - days + 1));
+  const since = sinceDate?.toISOString() || null;
+  const after = since ? Date.parse(since) : Number.NEGATIVE_INFINITY;
+  const emails = source.emails.filter((email) => Date.parse(email.internal_date) >= after);
+  const visibleRuns = since ? runs.filter((run) => Date.parse(run.created_at) >= Date.parse(since)) : runs;
+  const emailAnalytics = buildAnalyticsSnapshot(emails, visibleRuns, tokens, benchmark, now, {
+    key: range,
+    label: range === "all" ? "All time" : `Last ${range} days`,
+    days,
+    granularity: range === "all" ? "month" : "day",
+    from: since,
+    to: now.toISOString(),
+  });
+  if (!source.applications) return { ...emailAnalytics, application_lifecycle: null };
+  const applicationRows = source.applications.filter((application) => Date.parse(application.last_activity_at) >= after);
   const statusCounts = APPLICATION_STATUSES.map((status) => ({
     status,
     count: applicationRows.filter((application) => application.current_status === status).length,
@@ -651,6 +797,14 @@ async function analyticsSnapshot() {
         .map((item) => ({ source: "all_applications", target: item.status, count: item.count })),
     },
   };
+}
+
+async function materializeAnalyticsSnapshots(): Promise<void> {
+  const source = await loadAnalyticsSource();
+  await Promise.all(analyticsRanges.map(async (range) => {
+    const snapshot = buildAnalyticsForRange(source, range);
+    await analyticsSnapshotCache.set(analyticsCacheKey(range), snapshot, 86_400);
+  }));
 }
 
 async function applicationDetail(applicationId: string) {
@@ -720,7 +874,6 @@ async function candidateApplications(stored: Record<string, unknown>) {
     .eq("gmail_account_id", accountId)
     .order("last_activity_at", { ascending: false })
     .limit(30);
-  if (currentLink?.application_id) query = query.neq("id", currentLink.application_id);
   if (tokens.length) {
     query = query.or(tokens.flatMap((token) => [
       `company.ilike.*${token}*`,
@@ -728,13 +881,28 @@ async function candidateApplications(stored: Record<string, unknown>) {
       `latest_subject.ilike.*${token}*`,
     ]).join(","));
   }
-  const { data, error } = await query;
+  const [{ data, error }, currentApplicationResult] = await Promise.all([
+    query,
+    currentLink?.application_id
+      ? database
+        .from("application_board")
+        .select("id,company,role,latest_subject,last_activity_at")
+        .eq("id", currentLink.application_id)
+        .maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+  ]);
   if (error) throw new Error(`Could not load relationship candidates: ${error.message}`);
-  return (data || []).map((application) => ({
+  if (currentApplicationResult.error) throw new Error(`Could not load current application: ${currentApplicationResult.error.message}`);
+  const applications = [...(data || [])];
+  if (currentApplicationResult.data && !applications.some((application) => application.id === currentApplicationResult.data?.id)) {
+    applications.unshift(currentApplicationResult.data);
+  }
+  return applications.map((application) => ({
     id: String(application.id),
     company: typeof application.company === "string" ? application.company : null,
     role: typeof application.role === "string" ? application.role : null,
     latestSubject: typeof application.latest_subject === "string" ? application.latest_subject : null,
+    relationshipHint: application.id === currentLink?.application_id ? "current_application" as const : "heuristic_candidate" as const,
   }));
 }
 
@@ -1023,34 +1191,25 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const limit = Math.max(1, Math.min(1_000, Number(requestUrl.searchParams.get("limit") || "500")));
     const offset = Math.max(0, Number(requestUrl.searchParams.get("offset") || "0"));
     const status = requestUrl.searchParams.get("status");
-    let query = database
-      .from("application_board")
-      .select("*", { count: "exact" })
-      .order("last_activity_at", { ascending: false })
-      .range(offset, offset + limit - 1);
-    if (status && status !== "all") {
-      if (!APPLICATION_STATUSES.includes(status as ApplicationStatus)) {
-        json(response, 400, { error: `status must be one of: ${APPLICATION_STATUSES.join(", ")}` });
-        return;
-      }
-      query = query.eq("current_status", status);
+    const starredOnly = requestUrl.searchParams.get("starred") === "true";
+    if (!starredOnly && status && status !== "all" && !APPLICATION_STATUSES.includes(status as ApplicationStatus)) {
+      json(response, 400, { error: `status must be one of: ${APPLICATION_STATUSES.join(", ")}` });
+      return;
     }
-    const { data, error, count } = await query;
-    if (error) throw new Error(`Could not load Application Board. Apply migration 006 and run npm run applications:group. ${error.message}`);
-    const applicationRows = data || [];
-    const applicationIds = applicationRows.map((application) => String(application.id));
-    const starred = new Map<string, { is_starred: boolean; starred_at: string | null }>();
-    for (let starOffset = 0; starOffset < applicationIds.length; starOffset += 100) {
-      const { data: starRows, error: starError } = await database
-        .from("applications")
-        .select("id,is_starred,starred_at")
-        .in("id", applicationIds.slice(starOffset, starOffset + 100));
-      if (starError) throw new Error(`Could not load starred applications. Apply migration 008. ${starError.message}`);
-      for (const row of starRows || []) starred.set(String(row.id), { is_starred: Boolean(row.is_starred), starred_at: row.starred_at as string | null });
-    }
-    const enriched = applicationRows.map((application) => ({ ...application, ...(starred.get(String(application.id)) || { is_starred: false, starred_at: null }) }));
-    const total = count ?? 0;
-    json(response, 200, { applications: enriched, total, has_more: offset + applicationRows.length < total });
+    const snapshot = await cachedApplicationBoardSnapshot();
+    const source = starredOnly
+      ? snapshot.starred
+      : status && status !== "all"
+        ? snapshot.by_status[status] || []
+        : APPLICATION_STATUSES.flatMap((candidate) => snapshot.by_status[candidate] || []);
+    const applications = source.slice(offset, offset + limit);
+    json(response, 200, {
+      applications,
+      total: source.length,
+      has_more: offset + applications.length < source.length,
+      snapshot_generated_at: snapshot.generated_at,
+      cache_backend: analyticsSnapshotCache.backend(),
+    });
     return;
   }
   if (request.method === "GET" && path === "/api/applications/detail") {
@@ -1098,6 +1257,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         explanation: update.manual_notes || "Manual application status override",
       }, { onConflict: "application_id,email_id,status", ignoreDuplicates: false });
     if (eventError) throw new Error(`Application saved, but status history failed: ${eventError.message}`);
+    await refreshApplicationBoardSnapshot();
+    void refreshAnalyticsSnapshots().catch((refreshError: unknown) => {
+      console.error("Analytics cache refresh failed after application update:", refreshError);
+    });
     json(response, 200, { application: data });
     return;
   }
@@ -1116,6 +1279,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       .select("id,is_starred,starred_at")
       .single();
     if (error) throw new Error(`Could not save star. Apply migration 008. ${error.message}`);
+    await updateCachedApplicationStar(String(data.id), Boolean(data.is_starred), typeof data.starred_at === "string" ? data.starred_at : null);
     json(response, 200, { application: data });
     return;
   }
@@ -1162,7 +1326,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
   if (request.method === "GET" && path === "/api/analytics") {
-    json(response, 200, await analyticsSnapshot());
+    const requestedRange = requestUrl.searchParams.get("range") || "30";
+    if (!["30", "60", "90", "all"].includes(requestedRange)) {
+      json(response, 400, { error: "range must be one of: 30, 60, 90, all" });
+      return;
+    }
+    json(response, 200, await cachedAnalyticsSnapshot(requestedRange as AnalyticsRange));
     return;
   }
   if (request.method === "GET" && path === "/api/board/email") {
@@ -1333,15 +1502,29 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (boardError) throw new Error(`Could not load AI review queue: ${boardError.message}`);
     const ids = (boardRows || []).map((row) => String(row.email_id));
     const stored = new Map<string, Record<string, unknown>>();
+    const applicationMembership = new Map<string, string>();
     for (let offset = 0; offset < ids.length; offset += 100) {
-      const { data, error } = await database
-        .from("emails")
-        .select("id,llm_review_category,llm_review_confidence,llm_review_should_override,llm_review_input,llm_review_output,llm_review_model,llm_reviewed_at")
-        .in("id", ids.slice(offset, offset + 100));
-      if (error) throw new Error(`Could not load saved AI reviews. Apply migration 008. ${error.message}`);
-      for (const row of data || []) stored.set(String(row.id), row as Record<string, unknown>);
+      const batch = ids.slice(offset, offset + 100);
+      const [storedResult, membershipResult] = await Promise.all([
+        database
+          .from("emails")
+          .select("id,llm_review_category,llm_review_confidence,llm_review_should_override,llm_review_input,llm_review_output,llm_review_model,llm_reviewed_at")
+          .in("id", batch),
+        database
+          .from("application_messages")
+          .select("email_id,application_id")
+          .in("email_id", batch),
+      ]);
+      if (storedResult.error) throw new Error(`Could not load saved AI reviews. Apply migration 008. ${storedResult.error.message}`);
+      if (membershipResult.error) throw new Error(`Could not load AI review application memberships: ${membershipResult.error.message}`);
+      for (const row of storedResult.data || []) stored.set(String(row.id), row as Record<string, unknown>);
+      for (const row of membershipResult.data || []) applicationMembership.set(String(row.email_id), String(row.application_id));
     }
-    const candidates = (boardRows || []).map((row) => ({ ...row, ...(stored.get(String(row.email_id)) || {}) }));
+    const candidates = (boardRows || []).map((row) => ({
+      ...row,
+      ...(stored.get(String(row.email_id)) || {}),
+      current_application_id: applicationMembership.get(String(row.email_id)) || null,
+    }));
     json(response, 200, {
       candidates,
       total: count ?? candidates.length,
@@ -1371,7 +1554,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       nextAction: typeof stored.next_action === "string" ? stored.next_action : null,
       candidateApplications: await candidateApplications(stored),
     };
-    if (!shouldRequestLlmReview(reviewInput.jevCategory, reviewInput.jevConfidence)) {
+    const effectiveCategory = typeof stored.effective_category === "string" ? stored.effective_category : null;
+    const isHighValueLane = ["reply_needed", "interview_assessment", "offer"].includes(effectiveCategory || "");
+    if (!isHighValueLane && !shouldRequestLlmReview(reviewInput.jevCategory, reviewInput.jevConfidence)) {
       json(response, 400, { error: "This decision is not in the targeted AI review policy" });
       return;
     }
@@ -1411,6 +1596,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       association_confidence: Number(output.relationship_confidence),
     }).eq("email_id", emailId);
     if (error) throw new Error(`Could not join email to application: ${error.message}`);
+    startOutputRefresh(null);
     json(response, 200, { email_id: emailId, application_id: applicationId, joined: true });
     return;
   }
@@ -1500,5 +1686,8 @@ const server = createServer((request, response) => {
 server.listen(port, "127.0.0.1", () => {
   console.log(`Email Automation Jev dashboard: http://127.0.0.1:${port}`);
   console.log("Review labels save to private JSON; classifications, corrections, drafts, and applications save to Supabase.");
+  void Promise.all([cachedAnalyticsSnapshot("30"), cachedApplicationBoardSnapshot()])
+    .then(() => console.log(`Analytics and Application Board snapshots ready (${analyticsSnapshotCache.backend()} cache).`))
+    .catch((error: unknown) => console.error("Analytics cache warm-up failed:", error));
   console.log("Press Ctrl+C to stop.");
 });

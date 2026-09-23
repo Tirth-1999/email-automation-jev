@@ -141,6 +141,18 @@ Command Center is the normal operational entry point:
 
 Gmail ingestion and production classification cannot run at the same time. The dashboard may be closed after a job starts; Gmail history, `sync_runs`, classification runs, and completed Jev results remain durable in Supabase. The `email_board` view is the single classified-email source for Email Board, application materialization, and Analytics, so all three surfaces represent the same production result set.
 
+### Instant Analytics reads
+
+Analytics is materialized into four ready-to-render snapshots—30 days, 60 days, 90 days, and all time—when outputs are published. The complete Application Board is also materialized once into lifecycle and Starred lanes, so pagination is served as an in-memory array slice instead of issuing one Supabase query per lane. The dashboard serves these read models from an in-process L1 cache and can optionally use Redis as a shared L2 cache across restarts or multiple server instances. Supabase remains the source of truth; Redis contains derived aggregates only, never an independent writable copy of the mailbox.
+
+For a hosted Redis database, add its connection string and restart the dashboard:
+
+```env
+REDIS_URL=rediss://default:password@host:port
+```
+
+If `REDIS_URL` is absent or Redis is temporarily unavailable, the server falls back to memory and rebuilds the snapshots from Supabase. Publishing new outputs refreshes every Analytics range and every Application Board lane before the Command Center marks publication complete.
+
 ## Correct a classification and draft a reply
 
 Start the dashboard and open **Email Board**:
@@ -149,7 +161,7 @@ Start the dashboard and open **Email Board**:
 npm run dashboard
 ```
 
-The board is arranged as horizontal Kanban lanes for Applied, Outreach, Reply Needed, Interview / Assessment, Offer, Rejected, Other, and Uncertain. Select a card to read its header and full body, compare the Jev result with the effective category, and save a manual correction with notes. Saving a correction never changes the historical Jev result; it also adds or updates that email in the private **Jev Lab → Label Set** pool and canonical labeled JSON for the next `jev:prepare` run.
+The board is arranged as horizontal Kanban lanes, with Reply Needed, Interview / Assessment, and Offer first, followed by Applied, Outreach, Rejected, Other, and Uncertain. It loads the first 30 cards in each lane in parallel; **Load more** expands only the lane you are inspecting while its heading continues to show the complete database count. Select a card to read its header and full body, compare the Jev result with the effective category, and save a manual correction with notes. Saving a correction never changes the historical Jev result; it also adds or updates that email in the private **Jev Lab → Label Set** pool and canonical labeled JSON for the next `jev:prepare` run.
 
 Reply drafting is optional. Configure these server-only values in `.env`:
 
@@ -164,7 +176,7 @@ Restart the dashboard, select an email in the **Reply Needed** lane, adjust the 
 
 ## Targeted AI review
 
-Apply `supabase/migrations/008_ai_assistance.sql`, restart the dashboard, and open **AI**. Jev remains the primary classifier; the LLM is a structured second opinion for Reply Needed, Interview / Assessment, and Offer. The page shows the exact JSON input and schema-constrained output. It stores the review alongside the email without overwriting Jev or a human correction.
+Apply `supabase/migrations/008_ai_assistance.sql`, restart the dashboard, and open **AI → AI Brain**. Jev remains the primary classifier; the LLM is a structured second opinion for Reply Needed, Interview / Assessment, and Offer. Select a lane and review every entry or only entries still awaiting AI. The workspace summarizes agreements, proposed reclassifications, and possible duplicate-application relationships, while every email retains its exact JSON input and schema-constrained output. Reviews are stored alongside the email without overwriting Jev or a human correction.
 
 Relationship suggestions are advisory. The model must identify the same company and role or requisition, and the UI requires explicit confirmation before an email is joined to another application. Shared job-board or Gmail threads alone are not enough.
 
@@ -174,7 +186,7 @@ To measure this reviewer on a bounded human-labeled subset:
 npm run ai:evaluate -- --limit=20
 ```
 
-This consumes OpenAI API usage and writes the private report to `data/labeling/generated/llm-review-evaluation.json`. The separate **AI Chat** area is currently a disabled product shell; read-only mailbox querying and evidence citations are planned rather than simulated.
+This consumes OpenAI API usage and writes the private report to `data/labeling/generated/llm-review-evaluation.json`. **AI → AI Chat** is a separate disabled product shell; read-only mailbox querying and evidence citations are planned rather than simulated.
 
 ## Hourly automation and health
 
@@ -210,7 +222,7 @@ Command Center now refreshes the application model automatically after a success
 npm run applications:group
 ```
 
-Open **Application Board → Applications** for one card per grouped job opportunity. The grouping cascade uses requisition IDs and extracted company/role evidence first. Ambiguous messages inside the same Gmail thread are compared with a batched Jev yes/no relationship judgment. Manual company, role, requisition, and status edits are durable and append a manual lifecycle event.
+Open **Application Board → Applications** for one card per grouped job opportunity. Starred, Reply Needed, Interview / Assessment, and Offer appear first in the horizontal board; the remaining lifecycle lanes continue to the right. Each lane loads 30 cards initially and can be expanded independently. The grouping cascade uses requisition IDs and extracted company/role evidence first. Ambiguous messages inside the same Gmail thread are compared with a batched Jev yes/no relationship judgment. Manual company, role, requisition, and status edits are durable and append a manual lifecycle event.
 
 Gmail conversation continuity is supporting evidence, not an application identity. Different requisitions never merge; shared job-board threads can split into multiple applications; outgoing replies remain attached when no employer or requisition conflict exists. Jev joins an ambiguous pair only at or above `JEV_APPLICATION_MATCH_THRESHOLD` (default `0.72`), and failures conservatively keep the pair separate. Existing manual assignments always take precedence over automatic regrouping.
 
