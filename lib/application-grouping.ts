@@ -46,6 +46,12 @@ export interface ApplicationCandidate {
   events: ApplicationEventCandidate[];
 }
 
+export interface GhostingDecision {
+  shouldGhost: boolean;
+  ghostedAt: string | null;
+  reason: string;
+}
+
 const GENERIC_DOMAINS = new Set([
   "gmail.com",
   "outlook.com",
@@ -183,6 +189,46 @@ function statusForCategory(category: string | null): ApplicationStatus | null {
     : null;
 }
 
+export function conversationGhostingDecision(
+  rows: ApplicationEmailEvidence[],
+  now: Date,
+  ghostAfterDays: number,
+): GhostingDecision {
+  const ordered = [...rows].sort((left, right) => Date.parse(left.internal_date) - Date.parse(right.internal_date));
+  const latest = ordered.at(-1);
+  const incomingCount = ordered.filter((row) => row.direction === "incoming").length;
+  const outgoingCount = ordered.filter((row) => row.direction === "outgoing").length;
+  const establishedExchange = ordered.length >= 3 && incomingCount > 0 && outgoingCount > 0;
+  if (!establishedExchange) {
+    return {
+      shouldGhost: false,
+      ghostedAt: null,
+      reason: "Ghosting requires an established conversation with at least three messages in both directions",
+    };
+  }
+  if (latest?.direction !== "outgoing") {
+    return {
+      shouldGhost: false,
+      ghostedAt: null,
+      reason: "The latest message was not sent by the job seeker",
+    };
+  }
+  const latestAt = Date.parse(latest.internal_date);
+  const ageDays = (now.getTime() - latestAt) / 86_400_000;
+  if (!Number.isFinite(ageDays) || ageDays < ghostAfterDays) {
+    return {
+      shouldGhost: false,
+      ghostedAt: null,
+      reason: `The latest outgoing message has not been unanswered for ${ghostAfterDays} days`,
+    };
+  }
+  return {
+    shouldGhost: true,
+    ghostedAt: new Date(latestAt + ghostAfterDays * 86_400_000).toISOString(),
+    reason: `Established ${ordered.length}-message conversation received no reply for ${ghostAfterDays} days after the latest outgoing email`,
+  };
+}
+
 const STATUS_RANK: Record<ApplicationStatus, number> = {
   outreach: 1,
   applied: 2,
@@ -302,7 +348,11 @@ export function buildApplicationCandidates(
     threadMembers.push(index);
     membersByThread.set(threadKey, threadMembers);
 
-    const isStrongIdentity = Boolean(identity.requisitionId || (identity.company && identity.role));
+    // A cold outreach is an independent opportunity until thread continuity or
+    // later inbound evidence establishes a real conversation. Do not merge
+    // separate cold emails solely because they target the same company/role.
+    const isStrongIdentity = evidence.effective_category !== "outreach"
+      && Boolean(identity.requisitionId || (identity.company && identity.role));
     if (!isStrongIdentity) return;
     const semanticKey = `${evidence.gmail_account_id}:${identity.key}`;
     const semanticMatch = firstByStrongIdentity.get(semanticKey);
@@ -402,16 +452,17 @@ export function buildApplicationCandidates(
     const firstActivityAt = rows[0]?.internal_date || now.toISOString();
     const lastActivityAt = rows.at(-1)?.internal_date || firstActivityAt;
     let ghostedAt: string | null = null;
-    const ageDays = (now.getTime() - Date.parse(lastActivityAt)) / 86_400_000;
-    if ((currentStatus === "applied" || currentStatus === "outreach") && ageDays >= ghostAfterDays) {
+    const terminal = currentStatus === "offer" || currentStatus === "rejected";
+    const ghosting = conversationGhostingDecision(rows, now, ghostAfterDays);
+    if (!terminal && ghosting.shouldGhost && ghosting.ghostedAt) {
       currentStatus = "ghosted";
-      ghostedAt = new Date(Date.parse(lastActivityAt) + ghostAfterDays * 86_400_000).toISOString();
+      ghostedAt = ghosting.ghostedAt;
       events.push({
         emailId: null,
         status: "ghosted",
         eventAt: ghostedAt,
         source: "ghosting_rule",
-        explanation: `No reply or hiring-process progress for ${ghostAfterDays} days after the last activity`,
+        explanation: ghosting.reason,
       });
     }
     return {

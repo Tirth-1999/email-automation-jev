@@ -43,7 +43,7 @@ Run all commands from the repository root. Keep secrets in `.env`, use `.env.exa
 - Gmail, Supabase service, TypeSafe, and future OpenAI credentials remain server-side.
 - Jev outputs are immutable, versioned observations. A later run creates a new result instead of overwriting an old one.
 - Human-confirmed labels are ground truth. Jev and LLM output never becomes ground truth automatically.
-- Ghosting is derived from application activity and elapsed time, not classified from one email.
+- Ghosting is derived only from an established multi-message conversation that ends with an unanswered outgoing email; cold outreach and application confirmations do not age into Ghosted.
 - The first operational board is an **Email Board**. An **Application Board** follows only after reliable grouping.
 - The dashboard may remain framework-free until component complexity justifies a frontend framework.
 
@@ -459,7 +459,7 @@ Introduce `applications`, `application_messages`, and `application_status_events
 
 Grouping uses a cascade rather than equating Gmail threads with applications: explicit requisition conflicts split immediately; matching requisitions or company/role evidence join deterministically; outgoing replies stay connected when no conflict exists; and unresolved same-thread pairs are sent to a batched Jev Noul asking whether they represent the same specific opportunity. The application only joins high-probability matches and conservatively separates API failures or uncertain answers.
 
-Only then add one card per application, deterministic lifecycle precedence, explainable ghosting, company funnels, conversion/time-to-response analytics, and Sankey paths such as `Applied → Reply Needed → Interview / Assessment → Offer / Rejected / Ghosted`. Building those metrics directly from email counts would double-count applications.
+Only then add one card per application, deterministic lifecycle precedence, explainable conversation-based ghosting, company funnels, conversion/time-to-response analytics, and Sankey paths such as `Applied → Reply Needed → Interview / Assessment → Offer / Rejected / Ghosted`. Separate cold-outreach threads remain independent and retain Outreach unless later inbound evidence establishes a conversation. Building those metrics directly from email counts would double-count applications.
 
 ---
 

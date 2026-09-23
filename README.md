@@ -60,7 +60,7 @@ Kanban dashboard -> Open original message in Gmail
 - `ghosted`
 - `other`
 
-`ghosted` is different from the other categories. It represents the absence of a response over time, so it will be calculated from application history rather than inferred from a single incoming email.
+`ghosted` is different from the other categories. It is calculated only for an established conversation containing at least three messages across both directions when the latest message was sent by the job seeker and remains unanswered for the configured waiting period. Standalone applications and unanswered cold outreach remain `applied` and `outreach`.
 
 `outreach` covers messages sent to recruiters, hiring managers, referrals, and other contacts to initiate or follow up on a job-search conversation.
 
@@ -199,7 +199,7 @@ Open **Application Board → Applications** for one card per grouped job opportu
 
 Gmail conversation continuity is supporting evidence, not an application identity. Different requisitions never merge; shared job-board threads can split into multiple applications; outgoing replies remain attached when no employer or requisition conflict exists. Jev joins an ambiguous pair only at or above `JEV_APPLICATION_MATCH_THRESHOLD` (default `0.72`), and failures conservatively keep the pair separate. Existing manual assignments always take precedence over automatic regrouping.
 
-Open **Analytics** for the application Sankey. It counts grouped applications rather than emails. `ghosted` is added only to an applied/outreach-only application after `APPLICATION_GHOST_DAYS` without later progress; the generated event records that explanation.
+Open **Analytics** for the application Sankey. It counts grouped applications rather than emails. `ghosted` is added only after an established three-or-more-message exchange has both incoming and outgoing participation, ends with an outgoing email, and receives no reply for `APPLICATION_GHOST_DAYS`. Cold outreach and application confirmations never age into Ghosted on time alone; the generated lifecycle event records the exact explanation.
 
 ## Message identity
 

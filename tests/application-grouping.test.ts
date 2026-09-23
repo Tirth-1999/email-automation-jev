@@ -5,6 +5,7 @@ import {
   applicationRelationshipPairKey,
   applicationGroupingIdentity,
   buildApplicationCandidates,
+  conversationGhostingDecision,
   deterministicThreadRelationship,
   extractCompany,
   lifecycleTransitions,
@@ -40,19 +41,103 @@ test("application identity extracts LinkedIn destination company", () => {
 
 test("grouping combines related evidence and applies explainable ghosting", () => {
   const applications = buildApplicationCandidates([
-    evidence({ email_id: "email-1", gmail_thread_id: "thread-1", subject: "Application for Data Engineer at Acme - REQ-1234" }),
+    evidence({
+      email_id: "email-1",
+      gmail_thread_id: "thread-1",
+      internal_date: "2026-08-01T12:00:00.000Z",
+      direction: "outgoing",
+      subject: "Application for Data Engineer at Acme - REQ-1234",
+      effective_category: "outreach",
+    }),
     evidence({
       email_id: "email-2",
-      gmail_thread_id: "thread-2",
+      gmail_thread_id: "thread-1",
       internal_date: "2026-08-02T12:00:00.000Z",
+      direction: "incoming",
       subject: "Update on Application for Data Engineer at Acme - REQ-1234",
+      effective_category: "reply_needed",
+    }),
+    evidence({
+      email_id: "email-3",
+      gmail_thread_id: "thread-1",
+      internal_date: "2026-08-03T12:00:00.000Z",
+      direction: "outgoing",
+      subject: "Re: Update on Application for Data Engineer at Acme - REQ-1234",
+      effective_category: "outreach",
     }),
   ], { now: new Date("2026-09-22T12:00:00.000Z"), ghostAfterDays: 21 });
 
   assert.equal(applications.length, 1);
-  assert.equal(applications[0]?.messages.length, 2);
+  assert.equal(applications[0]?.messages.length, 3);
   assert.equal(applications[0]?.currentStatus, "ghosted");
-  assert.match(applications[0]?.events.at(-1)?.explanation || "", /21 days/);
+  assert.match(applications[0]?.events.at(-1)?.explanation || "", /Established 3-message conversation/);
+});
+
+test("old cold outreach remains outreach instead of becoming ghosted", () => {
+  const applications = buildApplicationCandidates([
+    evidence({
+      email_id: "cold-outreach",
+      gmail_thread_id: "cold-thread",
+      direction: "outgoing",
+      subject: "Data Engineer opportunity at Acme",
+      effective_category: "outreach",
+    }),
+  ], { now: new Date("2026-09-22T12:00:00.000Z"), ghostAfterDays: 21 });
+  assert.equal(applications[0]?.currentStatus, "outreach");
+  assert.equal(applications[0]?.ghostedAt, null);
+});
+
+test("old application without a conversation remains applied", () => {
+  const applications = buildApplicationCandidates([
+    evidence({ email_id: "application-confirmation", effective_category: "applied" }),
+  ], { now: new Date("2026-09-22T12:00:00.000Z"), ghostAfterDays: 21 });
+  assert.equal(applications[0]?.currentStatus, "applied");
+  assert.equal(applications[0]?.ghostedAt, null);
+});
+
+test("two-message exchange is not enough to infer ghosting", () => {
+  const rows = [
+    evidence({ email_id: "recruiter", direction: "incoming", effective_category: "reply_needed" }),
+    evidence({
+      email_id: "candidate",
+      direction: "outgoing",
+      internal_date: "2026-08-02T12:00:00.000Z",
+      effective_category: "outreach",
+    }),
+  ];
+  const decision = conversationGhostingDecision(rows, new Date("2026-09-22T12:00:00.000Z"), 21);
+  assert.equal(decision.shouldGhost, false);
+});
+
+test("conversation awaiting the candidate remains reply needed", () => {
+  const applications = buildApplicationCandidates([
+    evidence({ email_id: "candidate-1", direction: "outgoing", effective_category: "outreach" }),
+    evidence({ email_id: "recruiter-1", direction: "incoming", internal_date: "2026-08-02T12:00:00.000Z", effective_category: "reply_needed" }),
+    evidence({ email_id: "recruiter-2", direction: "incoming", internal_date: "2026-08-03T12:00:00.000Z", effective_category: "reply_needed" }),
+  ], { now: new Date("2026-09-22T12:00:00.000Z"), ghostAfterDays: 21 });
+  assert.equal(applications[0]?.currentStatus, "reply_needed");
+  assert.equal(applications[0]?.ghostedAt, null);
+});
+
+test("separate cold outreach threads do not merge by company and role", () => {
+  const applications = buildApplicationCandidates([
+    evidence({
+      email_id: "outreach-one",
+      gmail_thread_id: "cold-one",
+      direction: "outgoing",
+      subject: "Application for Data Engineer at Acme",
+      effective_category: "outreach",
+    }),
+    evidence({
+      email_id: "outreach-two",
+      gmail_thread_id: "cold-two",
+      direction: "outgoing",
+      internal_date: "2026-08-02T12:00:00.000Z",
+      subject: "Application for Data Engineer at Acme",
+      effective_category: "outreach",
+    }),
+  ], { now: new Date("2026-08-03T12:00:00.000Z") });
+  assert.equal(applications.length, 2);
 });
 
 test("incoming email and sent reply in the same Gmail thread stay in one application", () => {
