@@ -71,4 +71,6 @@ test("operations migration reuses existing tables and enforces private RPC acces
   assert.match(migration, /not exists[\s\S]*classification_runs/);
   assert.match(migration, /grant execute[\s\S]*service_role/);
   assert.match(migration, /reply_draft_status/);
+  assert.match(migration, /add column if not exists pipeline_lock_id/);
+  assert.match(migration, /notify pgrst, 'reload schema'/);
 });

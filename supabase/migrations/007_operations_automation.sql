@@ -4,20 +4,20 @@ begin;
 -- lease and latest health snapshot. No additional operational table is needed;
 -- sync_runs and classification_runs already hold detailed execution history.
 alter table public.gmail_accounts
-  add column pipeline_lock_id uuid,
-  add column pipeline_lock_expires_at timestamptz,
-  add column last_automation_started_at timestamptz,
-  add column last_automation_completed_at timestamptz,
-  add column last_automation_status text
+  add column if not exists pipeline_lock_id uuid,
+  add column if not exists pipeline_lock_expires_at timestamptz,
+  add column if not exists last_automation_started_at timestamptz,
+  add column if not exists last_automation_completed_at timestamptz,
+  add column if not exists last_automation_status text
     check (last_automation_status is null or last_automation_status in ('running', 'succeeded', 'failed', 'skipped')),
-  add column last_automation_error text,
-  add column last_automation_metrics jsonb not null default '{}'::jsonb
+  add column if not exists last_automation_error text,
+  add column if not exists last_automation_metrics jsonb not null default '{}'::jsonb
     check (jsonb_typeof(last_automation_metrics) = 'object');
 
 alter table public.emails
-  add column reply_draft_status text
+  add column if not exists reply_draft_status text
     check (reply_draft_status is null or reply_draft_status in ('suggested', 'reviewed')),
-  add column reply_draft_reviewed_at timestamptz;
+  add column if not exists reply_draft_reviewed_at timestamptz;
 
 create or replace function public.try_acquire_pipeline_lock(
   p_account_id uuid,
@@ -109,5 +109,10 @@ comment on column public.gmail_accounts.last_automation_metrics is
   'Body-free summary of the latest scheduled pipeline cycle for Command Center observability.';
 comment on column public.emails.reply_draft_status is
   'Current suggested reply state. Reviewed still requires explicit sending outside this application.';
+
+-- PostgREST normally detects DDL automatically. This notification makes the
+-- new RPC signatures available immediately after running the migration in the
+-- Supabase SQL Editor or through psql.
+notify pgrst, 'reload schema';
 
 commit;
