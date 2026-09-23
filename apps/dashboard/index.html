@@ -14,18 +14,25 @@
           <h1>Email Automation Jev</h1>
         </div>
         <nav class="view-switch" role="tablist" aria-label="Workspace view">
-          <button class="view-tab" data-view="command" type="button" role="tab" aria-selected="false">Command Center</button>
-          <button id="showReview" class="view-tab active" data-view="review" type="button" role="tab" aria-selected="true">Review Emails</button>
-          <button id="showBenchmark" class="view-tab" data-view="benchmark" type="button" role="tab" aria-selected="false">Evaluate Jev</button>
-          <button class="view-tab" data-view="board" type="button" role="tab" aria-selected="false">Email Board</button>
+          <button class="view-tab active" data-view="command" type="button" role="tab" aria-selected="true">Command Center</button>
+          <button class="view-tab" data-view="application_board" type="button" role="tab" aria-selected="false">Application Board</button>
+          <button class="view-tab" data-view="lab" type="button" role="tab" aria-selected="false">Jev Lab</button>
           <button class="view-tab" data-view="analytics" type="button" role="tab" aria-selected="false">Analytics</button>
-          <button class="view-tab" data-view="assistant" type="button" role="tab" aria-selected="false">AI Assistant</button>
         </nav>
         <div class="top-actions">
           <button id="openResample" class="button add" type="button">Add emails</button>
           <button id="exportCsv" class="button secondary" type="button">Export CSV</button>
           <button id="exportJson" class="button primary" type="button">Export JSON</button>
         </div>
+        <nav id="labSwitch" class="lab-switch" role="tablist" aria-label="Jev Lab mode" hidden>
+          <button class="lab-tab" data-lab-mode="labels" type="button" role="tab" aria-selected="false"><span>1</span> Label Set</button>
+          <button class="lab-tab active" data-lab-mode="quality" type="button" role="tab" aria-selected="true"><span>2</span> Quality</button>
+          <button class="lab-tab" data-lab-mode="performance" type="button" role="tab" aria-selected="false"><span>3</span> Performance</button>
+        </nav>
+        <nav id="boardSwitch" class="lab-switch board-switch" role="tablist" aria-label="Application Board mode" hidden>
+          <button class="lab-tab active" data-board-mode="emails" type="button" role="tab" aria-selected="true"><span>1</span> Emails</button>
+          <button class="lab-tab" data-board-mode="applications" type="button" role="tab" aria-selected="false"><span>2</span> Applications</button>
+        </nav>
       </header>
 
       <aside id="reviewSidebar" class="sidebar">
@@ -130,41 +137,241 @@
       <main id="commandView" class="command-view" hidden>
         <section class="command-heading">
           <div>
-            <p class="eyebrow">Phase 6 · Operations</p>
-            <h2>Classification Command Center</h2>
-            <p>Create a durable Jev run, preview its frozen scope, and monitor progress without keeping the browser request open.</p>
+            <p class="eyebrow">Mailbox pipeline · Operations</p>
+            <h2>Command Center</h2>
+            <p>Run the mailbox in order: sync new Gmail messages, classify the unclassified pool with Jev, then publish that result set to the Email Board, Applications, and Analytics.</p>
           </div>
-          <button id="refreshCommand" class="button secondary" type="button">Refresh runs</button>
+          <button id="refreshCommand" class="button secondary" type="button">Refresh pipeline</button>
         </section>
-        <section class="command-grid">
-          <form id="commandForm" class="command-panel">
-            <div class="panel-heading"><h3>New production run</h3><span>Jev v4</span></div>
-            <label><span>Scope</span><select id="commandScope"><option value="unclassified">Unclassified emails</option><option value="all">All active emails</option><option value="uncertain">Uncertain results</option><option value="failed">Failed results</option></select></label>
-            <label><span>Maximum emails <small>optional</small></span><input id="commandMaximum" type="number" min="1" placeholder="All selected emails" /></label>
-            <div class="command-fields date-fields">
-              <label><span>From date <small>optional</small></span><input id="commandAfter" type="date" /></label>
-              <label><span>Through date <small>optional</small></span><input id="commandBefore" type="date" /></label>
+        <section class="pipeline-steps" aria-label="Email processing pipeline">
+          <article id="ingestionStep" class="pipeline-step is-selected" data-pipeline-step="ingestion" tabindex="0" role="button" aria-pressed="true">
+            <div class="pipeline-step-heading"><span class="pipeline-step-number">1</span><div><h3>Sync Gmail</h3><small id="commandAccount">Connected mailbox</small></div><span id="commandIngestionState" class="pipeline-state">Ready</span></div>
+            <p id="commandIngestionMessage">Continue from the saved Gmail history cursor. A full recovery scan is used only when the cursor is missing or expired; drafts remain excluded.</p>
+            <div class="pipeline-metrics">
+              <div><strong id="commandNewCount">0</strong><span>new emails</span></div>
+              <div><strong id="commandUpdatedCount">0</strong><span>updated</span></div>
+              <div><strong id="commandMailboxCount">—</strong><span>stored</span></div>
             </div>
-            <div class="command-fields">
-              <label><span>Confidence threshold</span><input id="commandThreshold" type="number" min="0" max="1" step="0.01" value="0.6" /></label>
-              <label><span>Concurrency</span><input id="commandConcurrency" type="number" min="1" max="10" value="5" /></label>
-              <label><span>Batch size</span><input id="commandBatchSize" type="number" min="1" max="250" value="25" /></label>
+            <div class="run-progress pipeline-progress"><span id="commandIngestionProgress"></span></div>
+            <button id="syncNewEmails" class="button primary" type="button">Sync new emails</button>
+          </article>
+          <article id="classificationStep" class="pipeline-step" data-pipeline-step="classification" tabindex="0" role="button" aria-pressed="false">
+            <div class="pipeline-step-heading"><span class="pipeline-step-number">2</span><div><h3>Classify with Jev</h3><small>Durable production run</small></div><span id="commandClassificationState" class="pipeline-state">Ready</span></div>
+            <p>Jev classifies only emails that do not already have a completed production result.</p>
+            <div class="pipeline-metrics">
+              <div><strong id="commandUnclassifiedCount">—</strong><span>waiting</span></div>
+              <div><strong id="commandClassifiedCount">—</strong><span>classified</span></div>
+              <div><strong id="commandRunProgress">—</strong><span id="commandRunProgressLabel">last run</span></div>
             </div>
-            <div id="commandPreview" class="command-preview">Choose a scope and preview the frozen work set.</div>
-            <div class="dialog-actions"><button id="previewCommand" class="button secondary" type="button">Preview</button><button class="button primary" type="submit">Start run</button></div>
-            <p id="commandStatus" class="resample-status" aria-live="polite"></p>
-          </form>
-          <section class="command-panel"><div class="panel-heading"><h3>Recent runs</h3><span id="commandRunCount"></span></div><div id="commandRuns" class="command-runs"></div></section>
+            <div class="run-progress pipeline-progress"><span id="commandClassificationProgress"></span></div>
+            <button id="startCommandClassification" class="button primary" type="button">Run Jev classification</button>
+          </article>
+          <article id="outputStep" class="pipeline-step" data-pipeline-step="outputs" tabindex="0" role="button" aria-pressed="false">
+            <div class="pipeline-step-heading"><span class="pipeline-step-number">3</span><div><h3>Publish outputs</h3><small>Boards and analytics</small></div><span id="commandOutputState" class="pipeline-state">Ready</span></div>
+            <p>Make the completed production results available to the Email Board, rebuild Applications, and refresh the Analytics Sankey from the same data.</p>
+            <div class="pipeline-metrics">
+              <div><strong id="commandBoardCount">—</strong><span>board emails</span></div>
+              <div><strong id="commandApplicationCount">—</strong><span>applications</span></div>
+              <div><strong id="commandCorrectionCount">—</strong><span>corrections</span></div>
+            </div>
+            <div class="run-progress pipeline-progress"><span id="commandOutputProgress"></span></div>
+            <div class="pipeline-actions"><button id="refreshCommandOutputs" class="button primary" type="button">Publish latest results</button></div>
+          </article>
+        </section>
+        <section id="automationHealth" class="automation-health" aria-live="polite">
+          <span class="automation-health-dot"></span>
+          <div><strong id="automationHealthTitle">Hourly automation not configured</strong><small id="automationHealthDetail">Apply migration 007 and run the scheduler when deployment is ready.</small></div>
+          <span id="automationHealthMetric" class="automation-health-metric">Manual mode</span>
+        </section>
+        <p id="commandStatus" class="pipeline-status" aria-live="polite"></p>
+        <section class="pipeline-inspector" aria-live="polite">
+          <header class="pipeline-inspector-heading">
+            <div><span id="pipelineDetailKicker">Step 1 · Gmail intake</span><h3 id="pipelineDetailTitle">Resume the mailbox safely</h3></div>
+            <p id="pipelineDetailSummary">Only changes after the saved Gmail history cursor are requested, normalized, and stored.</p>
+          </header>
+          <div id="ingestionFlow" class="pipeline-detail-flow is-visible" data-step-detail="ingestion">
+            <div class="flow-node" data-ingestion-stage="gmail"><span class="flow-icon">G</span><strong>Gmail</strong><small id="flowGmailCount">Checking for changes</small></div>
+            <div class="flow-connector"><i></i><small>history cursor</small></div>
+            <div class="flow-node" data-ingestion-stage="normalize"><span class="flow-icon">↻</span><strong>Normalize</strong><small>Received + sent, no drafts</small></div>
+            <div class="flow-connector"><i></i><small>deduplicate</small></div>
+            <div class="flow-node" data-ingestion-stage="store"><span class="flow-icon">DB</span><strong>Supabase</strong><small id="flowStoredCount">— stored emails</small></div>
+            <div class="flow-live-metrics ingestion-live-metrics">
+              <span><small>Stage</small><strong id="flowIngestionStage">Idle</strong></span><span><small>Pages</small><strong id="flowPages">0</strong></span><span><small>Iteration</small><strong id="flowIteration">0</strong></span><span><small>Discovered</small><strong id="flowDiscovered">0</strong></span><span><small>In Supabase</small><strong id="flowExisting">0</strong></span><span><small>Pending</small><strong id="flowPending">0</strong></span><span><small>Inserted</small><strong id="flowInserted">0</strong></span><span><small>Updated</small><strong id="flowUpdated">0</strong></span><span><small>Skipped</small><strong id="flowSkipped">0</strong></span><span><small>Deleted</small><strong id="flowDeleted">0</strong></span>
+            </div>
+          </div>
+          <div id="classificationFlow" class="pipeline-detail-flow jev-flow" data-step-detail="classification" hidden>
+            <div class="flow-node batch-node" data-classification-stage="batch"><span class="flow-icon">25</span><strong>Email batch</strong><small id="flowWaitingCount">— waiting</small></div>
+            <div class="jev-beam" aria-hidden="true"><span></span><i></i></div>
+            <div class="flow-node jev-core" data-classification-stage="jev"><span class="flow-icon">J</span><strong>Jev</strong><small>Choice + Score + Noul</small></div>
+            <div class="jev-beam outgoing" aria-hidden="true"><span></span><i></i></div>
+            <div class="outcome-cloud" data-classification-stage="outcomes" aria-label="Jev classification outcomes">
+              <span style="--delay: 0">Applied</span><span style="--delay: 1">Outreach</span><span style="--delay: 2">Reply needed</span><span style="--delay: 3">Interview</span><span style="--delay: 4">Offer</span><span style="--delay: 5">Rejected</span><span style="--delay: 6">Other</span><span style="--delay: 7">Uncertain</span>
+            </div>
+            <div class="flow-live-metrics classification-live-metrics">
+              <span><small>Status</small><strong id="flowRunStatus">Idle</strong></span><span><small>Total</small><strong id="flowRunTotal">0</strong></span><span><small>Processed</small><strong id="flowRunProcessed">0</strong></span><span><small>Succeeded</small><strong id="flowRunSucceeded">0</strong></span><span><small>Failed</small><strong id="flowRunFailed">0</strong></span><span><small>Uncertain</small><strong id="flowRunUncertain">0</strong></span>
+            </div>
+          </div>
+          <div id="outputFlow" class="pipeline-detail-flow output-flow" data-step-detail="outputs" hidden>
+            <div class="flow-node" data-output-stage="classified"><span class="flow-icon">✓</span><strong>Classified results</strong><small id="flowClassifiedCount">— emails</small></div>
+            <div class="flow-connector"><i></i></div>
+            <div class="flow-node" data-output-stage="board"><span class="flow-icon">▦</span><strong>Email Board</strong><small>Latest effective decision</small></div>
+            <div class="flow-connector"><i></i></div>
+            <div class="flow-node" data-output-stage="applications"><span class="flow-icon">A</span><strong>Applications</strong><small id="flowApplicationCount">— grouped jobs</small></div>
+            <div class="flow-connector"><i></i></div>
+            <div class="flow-node" data-output-stage="analytics"><span class="flow-icon">↗</span><strong>Analytics</strong><small>Sankey + totals</small></div>
+            <div class="flow-live-metrics output-live-metrics">
+              <span><small>Stage</small><strong id="flowOutputStage">Ready</strong></span><span><small>Progress</small><strong id="flowOutputPercent">100%</strong></span><span><small>Board emails</small><strong id="flowOutputEmails">—</strong></span><span><small>Applications</small><strong id="flowOutputApplications">—</strong></span><span><small>Corrections</small><strong id="flowOutputCorrections">—</strong></span>
+            </div>
+          </div>
         </section>
       </main>
 
-      <main id="placeholderView" class="workspace-view" hidden>
-        <section class="workspace-placeholder">
-          <span id="placeholderPhase" class="phase-badge"></span>
-          <p id="placeholderEyebrow" class="eyebrow"></p>
-          <h2 id="placeholderTitle"></h2>
-          <p id="placeholderDescription"></p>
-          <div id="placeholderFeatures" class="placeholder-features"></div>
+      <main id="battlegroundView" class="battleground-view" hidden>
+        <section class="command-heading">
+          <div>
+            <p class="eyebrow">Jev Lab · Performance</p>
+            <h2>Live throughput test</h2>
+            <p>Classify a fresh random pool without changing production results. This separates Jev request latency from database and application overhead, then projects the observed wall-clock rate across the active mailbox.</p>
+          </div>
+          <button id="refreshBattleground" class="button secondary" type="button">Refresh</button>
+        </section>
+        <form id="battlegroundForm" class="command-panel battleground-runner">
+            <div class="panel-heading"><h3>Random speed test</h3><span>Same Jev v4 questions</span></div>
+            <div class="battleground-runner-row">
+              <div class="command-fields battleground-controls">
+                <label><span>Random emails</span><select id="battlegroundSample"><option value="25">25</option><option value="50">50</option><option value="100">100</option><option value="200">200</option><option value="500">500</option><option value="1000">1,000</option><option value="3000">3,000</option><option value="6000" selected>6,000</option></select></label>
+                <label><span>Concurrency</span><select id="battlegroundConcurrency"><option value="5">5</option><option value="10">10</option><option value="25">25</option><option value="50">50</option><option value="100">100</option><option value="250">250</option><option value="500" selected>500</option></select></label>
+                <label><span>Confidence threshold</span><input id="battlegroundThreshold" type="number" min="0" max="1" step="0.01" value="0.6" /></label>
+                <label><span>Retries</span><select id="battlegroundRetries"><option value="0" selected>0 · raw response</option><option value="2">2 · production-like</option></select></label>
+              </div>
+              <button id="startBattleground" class="button primary" type="submit">Run random test</button>
+            </div>
+            <div class="battleground-runner-footer">
+              <div class="battleground-note"><strong>No application rate throttle.</strong> Calls begin as concurrency slots open; rate limits remain visible.</div>
+              <p id="battlegroundStatus" class="resample-status" aria-live="polite">No test is running.</p>
+            </div>
+        </form>
+        <section class="battleground-layout">
+          <section class="command-panel battleground-summary">
+            <div class="panel-heading"><h3>Live measurement</h3><span id="battlegroundRunLabel">No run</span></div>
+            <div class="run-progress"><span id="battlegroundProgress"></span></div>
+            <div id="battlegroundCards" class="battleground-cards"></div>
+          </section>
+          <section class="battleground-decision-panel command-panel">
+            <div class="panel-heading">
+              <div><h3>Decision heatmap</h3><small>Area = email volume · color = confidence</small></div>
+              <span id="battlegroundDecisionCount">0 decisions</span>
+            </div>
+            <div class="decision-map-legend" aria-label="Confidence legend"><span class="low">Low</span><span class="medium">Medium</span><span class="high">High</span><span class="failed">Failed</span></div>
+            <div id="battlegroundDecisionMap" class="decision-map" aria-live="polite"><p class="decision-map-empty">Run a test to see Jev’s decisions take shape.</p></div>
+          </section>
+        </section>
+        <details class="battleground-results command-panel">
+          <summary class="panel-heading"><div><h3>Per-email results</h3><small>Open detailed timing diagnostics</small></div><span id="battlegroundResultCount">0 emails</span></summary>
+          <div class="battleground-table-wrap">
+            <table class="battleground-table">
+              <thead><tr><th>Email</th><th>Decision</th><th>Jev</th><th>App overhead</th><th>Total worker</th></tr></thead>
+              <tbody id="battlegroundRows"></tbody>
+            </table>
+          </div>
+        </details>
+      </main>
+
+      <main id="boardView" class="board-view" hidden>
+        <section class="command-heading">
+          <div>
+            <p class="eyebrow">Application Board · Email decisions</p>
+            <h2>Emails</h2>
+            <p>Inspect the latest Jev decision, apply a human correction without changing the original result, and generate a contextual reply draft for your review.</p>
+          </div>
+          <div class="board-heading-actions">
+            <select id="boardCategory" aria-label="Filter Email Board by category"><option value="all">All categories</option><option value="applied">Applied</option><option value="outreach">Outreach</option><option value="reply_needed">Reply needed</option><option value="interview_assessment">Interview / assessment</option><option value="offer">Offer</option><option value="rejected">Rejected</option><option value="other">Other</option><option value="uncertain">Uncertain</option></select>
+            <select id="boardAction" aria-label="Filter Email Board by next action"><option value="all">All actions</option><option value="needs_action">Needs action</option><option value="write_reply">Write reply</option><option value="open_link">Open link</option><option value="fill_form">Fill form</option><option value="schedule_interview">Schedule interview</option><option value="complete_assessment">Complete assessment</option><option value="send_document">Send document</option><option value="review_offer">Review offer</option><option value="no_action">No action</option></select>
+            <button id="refreshBoard" class="button secondary" type="button">Refresh</button>
+          </div>
+        </section>
+        <section class="board-layout">
+          <section class="command-panel board-kanban-panel">
+            <div class="panel-heading"><h3>Classification lanes</h3><span id="boardCount">0 emails</span></div>
+            <div id="boardList" class="board-kanban" aria-label="Email classification Kanban board"></div>
+          </section>
+          <section id="boardDetail" class="command-panel board-detail">
+            <p class="board-empty">Choose a card to inspect the email and correct its decision.</p>
+          </section>
+        </section>
+      </main>
+
+      <main id="analyticsView" class="analytics-view" hidden>
+        <section class="command-heading">
+          <div>
+            <p class="eyebrow">Phases 9–10 · Measured decisions</p>
+            <h2>Analytics</h2>
+            <p>Live aggregates from the classified mailbox, durable production runs, human corrections, and the current held-out Jev benchmark. Click a category or action to inspect its source emails.</p>
+          </div>
+          <button id="refreshAnalytics" class="button secondary" type="button">Refresh</button>
+        </section>
+        <p id="analyticsStatus" class="analytics-status" aria-live="polite">Loading analytics…</p>
+        <section id="analyticsContent" hidden>
+          <div id="analyticsCards" class="analytics-cards"></div>
+          <section class="analytics-panel lifecycle-panel">
+            <div class="panel-heading"><div><h3>Where every application stands</h3><small>All grouped applications flow into exactly one current-status pool; ribbon width equals the pool size</small></div><span id="lifecycleApplicationCount"></span></div>
+            <div id="lifecycleSankey" class="lifecycle-sankey" role="img" aria-label="Application lifecycle Sankey diagram"></div>
+            <p id="lifecycleEmpty" class="analytics-empty" hidden>Group the classified emails to generate application lifecycle paths.</p>
+          </section>
+          <section class="analytics-panel analytics-activity-panel">
+            <div class="panel-heading"><div><h3>30-day email activity</h3><small>Classified emails by received/sent date</small></div><span id="analyticsActivityTotal"></span></div>
+            <div id="analyticsActivity" class="analytics-activity" aria-label="Email activity over the last 30 days"></div>
+          </section>
+          <div class="analytics-grid">
+            <section class="analytics-panel">
+              <div class="panel-heading"><div><h3>Categories</h3><small>Effective category after human overrides</small></div><span id="analyticsCategoryTotal"></span></div>
+              <div id="analyticsCategories" class="analytics-bars"></div>
+            </section>
+            <section class="analytics-panel">
+              <div class="panel-heading"><div><h3>Action backlog</h3><small>What each email asks you to do next</small></div><span id="analyticsActionTotal"></span></div>
+              <div id="analyticsActions" class="analytics-bars"></div>
+            </section>
+            <section class="analytics-panel">
+              <div class="panel-heading"><div><h3>Confidence</h3><small>Jev top-category probability bands</small></div><span id="analyticsConfidenceTotal"></span></div>
+              <div id="analyticsConfidence" class="analytics-bars"></div>
+            </section>
+            <section class="analytics-panel">
+              <div class="panel-heading"><div><h3>Held-out benchmark</h3><small id="analyticsBenchmarkVersion">Current classifier release gate</small></div><span>39-email set</span></div>
+              <div id="analyticsBenchmark" class="analytics-quality"></div>
+            </section>
+          </div>
+          <section class="analytics-panel analytics-runs-panel">
+            <div class="panel-heading"><div><h3>Recent durable runs</h3><small>Throughput includes the complete worker job; tokens are summed from stored results</small></div><span id="analyticsRunCount"></span></div>
+            <div class="analytics-table-wrap">
+              <table class="analytics-table">
+                <thead><tr><th>Run</th><th>Status</th><th>Processed</th><th>Failure</th><th>Uncertain</th><th>Duration</th><th>Throughput</th><th>Input tokens</th></tr></thead>
+                <tbody id="analyticsRuns"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      </main>
+
+      <main id="applicationsView" class="applications-view" hidden>
+        <section class="command-heading">
+          <div>
+            <p class="eyebrow">Application Board · Grouped opportunities</p>
+            <h2>Applications</h2>
+            <p>Related email evidence is grouped into one application. Ghosted is derived only when an applied or outreach-only application has no progress for the configured waiting period.</p>
+          </div>
+          <div class="board-heading-actions">
+            <select id="applicationStatus" aria-label="Filter applications by lifecycle status"><option value="all">All statuses</option><option value="outreach">Outreach</option><option value="applied">Applied</option><option value="reply_needed">Reply needed</option><option value="interview_assessment">Interview / assessment</option><option value="offer">Offer</option><option value="rejected">Rejected</option><option value="ghosted">Ghosted</option></select>
+            <button id="refreshApplications" class="button secondary" type="button">Refresh</button>
+          </div>
+        </section>
+        <section class="application-layout">
+          <section class="command-panel application-board-panel">
+            <div class="panel-heading"><h3>Application lanes</h3><span id="applicationCount">0 applications</span></div>
+            <div id="applicationBoard" class="application-board" aria-label="Job application lifecycle Kanban board"></div>
+          </section>
+          <section id="applicationDetail" class="command-panel application-detail">
+            <p class="board-empty">Choose an application to inspect its lifecycle and email evidence.</p>
+          </section>
         </section>
       </main>
 
@@ -216,6 +423,8 @@
         </div>
       </form>
     </dialog>
+    <script src="/vendor/d3.min.js"></script>
+    <script src="/vendor/d3-sankey.min.js"></script>
     <script type="module" src="/src/app.js"></script>
   </body>
 </html>
