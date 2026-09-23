@@ -105,6 +105,7 @@ const analyticsView = document.querySelector("#analyticsView");
 const analyticsStatus = document.querySelector("#analyticsStatus");
 const analyticsContent = document.querySelector("#analyticsContent");
 const analyticsCards = document.querySelector("#analyticsCards");
+const analyticsNarrative = document.querySelector("#analyticsNarrative");
 const analyticsActivity = document.querySelector("#analyticsActivity");
 const analyticsCategories = document.querySelector("#analyticsCategories");
 const analyticsActions = document.querySelector("#analyticsActions");
@@ -718,13 +719,36 @@ async function loadBoard(selectFirst = false) {
   }
 }
 
-function analyticsMetric(label, value, detail, accent = "") {
+const analyticsPalette = {
+  applied: "#315efb",
+  outreach: "#7c3aed",
+  reply_needed: "#ea580c",
+  interview_assessment: "#0891b2",
+  offer: "#16a34a",
+  rejected: "#dc2626",
+  other: "#94a3b8",
+  uncertain: "#d97706",
+  high: "#16a34a",
+  medium: "#60a5fa",
+  low: "#d97706",
+  not_available: "#cbd5e1",
+};
+
+function analyticsMetric(label, value, detail, accent = "", progress = null) {
   const card = element("article", `metric-card analytics-metric ${accent}`.trim());
-  card.append(
-    element("span", "", label),
-    element("strong", "", value),
-    element("small", "", detail),
-  );
+  const copy = element("div", "analytics-metric-copy");
+  copy.append(element("span", "", label), element("strong", "", value), element("small", "", detail));
+  card.append(copy);
+  if (typeof progress === "number") {
+    const ring = element("span", "analytics-metric-ring");
+    const bounded = Math.max(0, Math.min(1, progress));
+    ring.style.setProperty("--metric-progress", `${bounded * 360}deg`);
+    ring.append(element("i", "", `${Math.round(bounded * 100)}%`));
+    card.append(ring);
+  } else {
+    const glyph = element("span", "analytics-metric-glyph", accent === "warning" ? "↗" : accent === "human" ? "✓" : accent === "uncertain" ? "?" : "▦");
+    card.append(glyph);
+  }
   analyticsCards.append(card);
 }
 
@@ -738,6 +762,8 @@ function openBoardFromAnalytics(category = "all", action = "all") {
 function renderAnalyticsBars(container, items, options = {}) {
   container.replaceChildren();
   const actionable = options.actionable !== false;
+  const insight = element("p", "analytics-chart-insight", options.defaultInsight || "Hover over a row to inspect its contribution.");
+  container.append(insight);
   for (const item of items) {
     const row = document.createElement(actionable ? "button" : "div");
     row.className = `analytics-bar-row ${options.kind || ""}`.trim();
@@ -748,9 +774,15 @@ function renderAnalyticsBars(container, items, options = {}) {
         else if (options.kind === "action") openBoardFromAnalytics("all", item.key);
       });
     }
+    const labelText = options.labels?.[item.key] || displayCategory(item.key);
+    const explain = () => {
+      insight.innerHTML = `<strong>${labelText}</strong> accounts for ${item.count.toLocaleString()} emails, or ${displayPercent(item.share)} of this view.${actionable ? " Click to inspect the supporting emails." : ""}`;
+    };
+    row.addEventListener("mouseenter", explain);
+    row.addEventListener("focus", explain);
     const header = element("span", "analytics-bar-copy");
     header.append(
-      element("strong", "", options.labels?.[item.key] || displayCategory(item.key)),
+      element("strong", "", labelText),
       element("small", "", `${item.count.toLocaleString()} · ${displayPercent(item.share)}`),
     );
     const track = element("span", "analytics-bar-track");
@@ -762,20 +794,128 @@ function renderAnalyticsBars(container, items, options = {}) {
   }
 }
 
+function renderCategoryDistribution(items) {
+  analyticsCategories.replaceChildren();
+  const nonZero = items.filter((item) => item.count > 0);
+  const maximum = Math.max(1, ...nonZero.map((item) => item.count));
+  const insight = element("p", "analytics-chart-insight");
+  const leader = [...nonZero].sort((left, right) => right.count - left.count)[0];
+  insight.innerHTML = leader
+    ? `<strong>${displayCategory(leader.key)}</strong> is the largest email pool at ${leader.count.toLocaleString()} messages (${displayPercent(leader.share)}). Select any column to open its evidence.`
+    : "No category decisions are available yet.";
+  const chart = element("div", "distribution-columns");
+  for (const item of nonZero) {
+    const label = displayCategory(item.key);
+    const column = element("button", `distribution-column key-${item.key}`);
+    column.type = "button";
+    column.setAttribute("aria-label", `${label}: ${item.count.toLocaleString()} emails, ${displayPercent(item.share)}`);
+    const plot = element("span", "distribution-column-plot");
+    const bar = element("i", "distribution-column-bar");
+    bar.style.height = `${Math.max(5, (item.count / maximum) * 100)}%`;
+    bar.style.background = analyticsPalette[item.key] || analyticsPalette.other;
+    plot.append(bar);
+    column.append(
+      element("strong", "", item.count.toLocaleString()),
+      plot,
+      element("span", "", label),
+      element("small", "", displayPercent(item.share)),
+    );
+    const explain = () => {
+      insight.innerHTML = `<strong>${label}</strong> contains ${item.count.toLocaleString()} emails (${displayPercent(item.share)}). Click to filter the Email Board to this category.`;
+      chart.querySelectorAll(".distribution-column").forEach((node) => node.classList.toggle("is-highlighted", node === column));
+    };
+    column.addEventListener("mouseenter", explain);
+    column.addEventListener("focus", explain);
+    column.addEventListener("click", () => openBoardFromAnalytics(item.key, "all"));
+    chart.append(column);
+  }
+  analyticsCategories.append(insight, chart);
+}
+
+function renderConfidenceDonut(items) {
+  analyticsConfidence.replaceChildren();
+  const colors = items.map((item) => analyticsPalette[item.key] || analyticsPalette.not_available);
+  let cursor = 0;
+  const stops = items.map((item, index) => {
+    const start = cursor;
+    cursor += item.share * 100;
+    return `${colors[index]} ${start}% ${cursor}%`;
+  });
+  const high = items.find((item) => item.key === "high");
+  const donut = element("div", "confidence-donut");
+  donut.style.background = `conic-gradient(${stops.join(", ")})`;
+  const center = element("span", "confidence-donut-center");
+  center.append(element("strong", "", displayPercent(high?.share || 0)), element("small", "", "high confidence"));
+  donut.append(center);
+  const legend = element("div", "confidence-legend");
+  const insight = element("p", "analytics-chart-insight", "High-confidence decisions have at least 80% top-category probability.");
+  for (const item of items) {
+    const label = item.key === "high" ? "High · 80%+" : item.key === "medium" ? "Medium · 60–79%" : item.key === "low" ? "Low · under 60%" : "Not available";
+    const row = element("button", "confidence-legend-row");
+    row.type = "button";
+    const dot = element("i", "");
+    dot.style.background = analyticsPalette[item.key] || analyticsPalette.not_available;
+    row.append(dot, element("span", "", label), element("strong", "", `${item.count.toLocaleString()} · ${displayPercent(item.share)}`));
+    const explain = () => { insight.innerHTML = `<strong>${label}</strong> contains ${item.count.toLocaleString()} decisions (${displayPercent(item.share)}).`; };
+    row.addEventListener("mouseenter", explain);
+    row.addEventListener("focus", explain);
+    legend.append(row);
+  }
+  const visual = element("div", "confidence-visual-grid");
+  visual.append(donut, legend);
+  analyticsConfidence.append(visual, insight);
+}
+
 function renderAnalyticsActivity(activity) {
   analyticsActivity.replaceChildren();
   const maximum = Math.max(1, ...activity.map((item) => item.count));
   const total = activity.reduce((sum, item) => sum + item.count, 0);
   document.querySelector("#analyticsActivityTotal").textContent = `${total.toLocaleString()} emails`;
-  for (const item of activity) {
-    const column = element("div", "activity-column");
-    column.title = `${new Date(`${item.date}T00:00:00Z`).toLocaleDateString()} · ${item.count.toLocaleString()} emails`;
-    const bar = element("span", "activity-bar");
-    bar.style.height = `${Math.max(item.count ? 5 : 1, (item.count / maximum) * 100)}%`;
-    const label = element("small", "", new Date(`${item.date}T00:00:00Z`).toLocaleDateString([], { month: "short", day: "numeric" }));
-    column.append(bar, label);
-    analyticsActivity.append(column);
-  }
+  const width = 1000;
+  const height = 210;
+  const pad = { left: 34, right: 18, top: 20, bottom: 30 };
+  const x = (index) => pad.left + (index / Math.max(1, activity.length - 1)) * (width - pad.left - pad.right);
+  const y = (count) => height - pad.bottom - (count / maximum) * (height - pad.top - pad.bottom);
+  const points = activity.map((item, index) => `${x(index)},${y(item.count)}`).join(" ");
+  const area = `${pad.left},${height - pad.bottom} ${points} ${x(activity.length - 1)},${height - pad.bottom}`;
+  const svg = svgElement("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": `Thirty day email activity, ${total} emails total` });
+  const defs = svgElement("defs");
+  const gradient = svgElement("linearGradient", { id: "activityGradient", x1: "0", y1: "0", x2: "0", y2: "1" });
+  gradient.append(svgElement("stop", { offset: "0%", "stop-color": "#315efb", "stop-opacity": ".28" }), svgElement("stop", { offset: "100%", "stop-color": "#315efb", "stop-opacity": ".02" }));
+  defs.append(gradient);
+  svg.append(defs, svgElement("polygon", { points: area, fill: "url(#activityGradient)" }), svgElement("polyline", { points, class: "activity-line" }));
+  const guide = svgElement("line", { class: "activity-guide", y1: pad.top, y2: height - pad.bottom });
+  guide.hidden = true;
+  svg.append(guide);
+  const tooltip = element("div", "analytics-tooltip");
+  tooltip.hidden = true;
+  activity.forEach((item, index) => {
+    const circle = svgElement("circle", { cx: x(index), cy: y(item.count), r: 4, class: "activity-point" });
+    const hit = svgElement("rect", {
+      x: x(index) - (width / activity.length) / 2,
+      y: pad.top,
+      width: width / activity.length,
+      height: height - pad.top - pad.bottom,
+      fill: "transparent",
+      tabindex: "0",
+      role: "button",
+      "aria-label": `${item.date}: ${item.count} emails`,
+    });
+    const show = () => {
+      guide.hidden = false;
+      guide.setAttribute("x1", String(x(index)));
+      guide.setAttribute("x2", String(x(index)));
+      tooltip.hidden = false;
+      tooltip.style.left = `${(x(index) / width) * 100}%`;
+      tooltip.innerHTML = `<strong>${item.count.toLocaleString()} emails</strong><span>${new Date(`${item.date}T00:00:00Z`).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</span>`;
+      svg.querySelectorAll(".activity-point").forEach((node) => node.classList.toggle("is-active", node === circle));
+    };
+    hit.addEventListener("mouseenter", show);
+    hit.addEventListener("focus", show);
+    svg.append(circle, hit);
+  });
+  analyticsActivity.addEventListener("mouseleave", () => { guide.hidden = true; tooltip.hidden = true; });
+  analyticsActivity.append(svg, tooltip);
 }
 
 function renderAnalyticsBenchmark(benchmark) {
@@ -842,26 +982,66 @@ function renderAnalyticsRuns(runs) {
   }
 }
 
+function renderAnalyticsNarrative(snapshot) {
+  analyticsNarrative.replaceChildren();
+  const categories = new Map(snapshot.category_breakdown.map((item) => [item.key, item]));
+  const lifecycle = snapshot.application_lifecycle;
+  const statuses = new Map((lifecycle?.status_breakdown || []).map((item) => [item.status, item.count]));
+  const totalApplications = Number(lifecycle?.application_count || 0);
+  const activeProgress = Number(statuses.get("reply_needed") || 0) + Number(statuses.get("interview_assessment") || 0) + Number(statuses.get("offer") || 0);
+  const cards = [
+    {
+      icon: "◎",
+      label: "Mailbox shape",
+      title: `${displayPercent(categories.get("applied")?.share || 0)} application confirmations`,
+      body: `${Number(categories.get("applied")?.count || 0).toLocaleString()} classified emails confirm an application was received.`,
+    },
+    {
+      icon: "→",
+      label: "Action pressure",
+      title: `${snapshot.summary.needs_action.toLocaleString()} emails need action`,
+      body: `${snapshot.summary.drafts_recommended.toLocaleString()} currently recommend a written reply; use Action backlog to open the exact messages.`,
+    },
+    {
+      icon: "↗",
+      label: "Pipeline movement",
+      title: totalApplications ? `${displayPercent(activeProgress / totalApplications)} actively progressed` : "No application data yet",
+      body: totalApplications
+        ? `${activeProgress.toLocaleString()} of ${totalApplications.toLocaleString()} applications are awaiting a reply, in assessment/interview, or at offer.`
+        : "Publish application outputs to calculate lifecycle movement.",
+    },
+  ];
+  for (const item of cards) {
+    const card = element("article", "analytics-insight-card");
+    card.append(
+      element("span", "analytics-insight-icon", item.icon),
+      element("small", "", item.label),
+      element("strong", "", item.title),
+      element("p", "", item.body),
+    );
+    analyticsNarrative.append(card);
+  }
+}
+
 function renderAnalytics(snapshot) {
   analyticsCards.replaceChildren();
+  const classified = Math.max(1, snapshot.summary.classified_emails);
   analyticsMetric("Classified emails", snapshot.summary.classified_emails.toLocaleString(), "Current effective board records");
-  analyticsMetric("Needs action", snapshot.summary.needs_action.toLocaleString(), `${snapshot.summary.drafts_recommended.toLocaleString()} replies recommended`, "warning");
-  analyticsMetric("Uncertain", displayPercent(snapshot.summary.uncertain_rate), `${snapshot.summary.uncertain.toLocaleString()} emails below the decision threshold`, "uncertain");
-  analyticsMetric("Human corrections", snapshot.summary.human_corrections.toLocaleString(), `${snapshot.summary.human_disagreements.toLocaleString()} changed Jev decisions`, "human");
+  analyticsMetric("Needs action", snapshot.summary.needs_action.toLocaleString(), `${snapshot.summary.drafts_recommended.toLocaleString()} replies recommended`, "warning", snapshot.summary.needs_action / classified);
+  analyticsMetric("Uncertain", displayPercent(snapshot.summary.uncertain_rate), `${snapshot.summary.uncertain.toLocaleString()} emails below threshold`, "uncertain", snapshot.summary.uncertain_rate);
+  analyticsMetric("Human corrections", snapshot.summary.human_corrections.toLocaleString(), `${snapshot.summary.human_disagreements.toLocaleString()} changed Jev decisions`, "human", snapshot.summary.human_corrections / classified);
+  renderAnalyticsNarrative(snapshot);
   renderAnalyticsActivity(snapshot.activity);
   document.querySelector("#analyticsCategoryTotal").textContent = `${snapshot.summary.classified_emails.toLocaleString()} emails`;
   document.querySelector("#analyticsActionTotal").textContent = `${snapshot.summary.needs_action.toLocaleString()} actionable`;
   document.querySelector("#analyticsConfidenceTotal").textContent = `${snapshot.summary.uncertain.toLocaleString()} uncertain`;
-  renderAnalyticsBars(analyticsCategories, snapshot.category_breakdown, { kind: "category" });
+  renderCategoryDistribution(snapshot.category_breakdown);
   renderAnalyticsBars(analyticsActions, snapshot.action_breakdown, {
     kind: "action",
     labels: { not_available: "Not available", no_action: "No action" },
+    defaultInsight: "Hover over an action to see its workload; click to open those emails.",
   });
-  renderAnalyticsBars(analyticsConfidence, snapshot.confidence_breakdown, {
-    actionable: false,
-    kind: "confidence",
-    labels: { high: "High · 80%+", medium: "Medium · 60–79%", low: "Low · under 60%", not_available: "Not available" },
-  });
+  renderConfidenceDonut(snapshot.confidence_breakdown);
   renderAnalyticsBenchmark(snapshot.benchmark);
   renderAnalyticsRuns(snapshot.runs);
   renderLifecycleSankey(snapshot.application_lifecycle);

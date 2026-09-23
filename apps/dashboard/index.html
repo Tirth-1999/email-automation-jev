@@ -313,27 +313,28 @@
         <p id="analyticsStatus" class="analytics-status" aria-live="polite">Loading analytics…</p>
         <section id="analyticsContent" hidden>
           <div id="analyticsCards" class="analytics-cards"></div>
+          <section id="analyticsNarrative" class="analytics-narrative" aria-live="polite"></section>
           <section class="analytics-panel lifecycle-panel">
             <div class="panel-heading"><div><h3>Where every application stands</h3><small>All grouped applications flow into exactly one current-status pool; ribbon width equals the pool size</small></div><span id="lifecycleApplicationCount"></span></div>
             <div id="lifecycleSankey" class="lifecycle-sankey" role="img" aria-label="Application lifecycle Sankey diagram"></div>
             <p id="lifecycleEmpty" class="analytics-empty" hidden>Group the classified emails to generate application lifecycle paths.</p>
           </section>
           <section class="analytics-panel analytics-activity-panel">
-            <div class="panel-heading"><div><h3>30-day email activity</h3><small>Classified emails by received/sent date</small></div><span id="analyticsActivityTotal"></span></div>
+            <div class="panel-heading"><div><h3>30-day email activity</h3><small>Hover across the trend to inspect any day</small></div><span id="analyticsActivityTotal"></span></div>
             <div id="analyticsActivity" class="analytics-activity" aria-label="Email activity over the last 30 days"></div>
           </section>
           <div class="analytics-grid">
-            <section class="analytics-panel">
-              <div class="panel-heading"><div><h3>Categories</h3><small>Effective category after human overrides</small></div><span id="analyticsCategoryTotal"></span></div>
-              <div id="analyticsCategories" class="analytics-bars"></div>
+            <section class="analytics-panel analytics-category-panel">
+              <div class="panel-heading"><div><h3>Category landscape</h3><small>Hover to understand each pool; click to inspect its emails</small></div><span id="analyticsCategoryTotal"></span></div>
+              <div id="analyticsCategories" class="analytics-distribution"></div>
             </section>
             <section class="analytics-panel">
               <div class="panel-heading"><div><h3>Action backlog</h3><small>What each email asks you to do next</small></div><span id="analyticsActionTotal"></span></div>
               <div id="analyticsActions" class="analytics-bars"></div>
             </section>
             <section class="analytics-panel">
-              <div class="panel-heading"><div><h3>Confidence</h3><small>Jev top-category probability bands</small></div><span id="analyticsConfidenceTotal"></span></div>
-              <div id="analyticsConfidence" class="analytics-bars"></div>
+              <div class="panel-heading"><div><h3>Decision confidence</h3><small>Probability concentration across Jev classifications</small></div><span id="analyticsConfidenceTotal"></span></div>
+              <div id="analyticsConfidence" class="analytics-confidence-visual"></div>
             </section>
             <section class="analytics-panel">
               <div class="panel-heading"><div><h3>Held-out benchmark</h3><small id="analyticsBenchmarkVersion">Current classifier release gate</small></div><span>39-email set</span></div>
