@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
   HumanCategory,
-  HumanLabelEventInput,
-  JsonObject,
+  HumanLabelInput,
 } from "./classification-types.js";
 import type { LabeledEmail } from "./labeling-store.js";
 
@@ -14,7 +13,7 @@ export function humanDatasetVersion(emails: LabeledEmail[]): string {
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
-export function humanLabelImportRows(emails: LabeledEmail[]): HumanLabelEventInput[] {
+export function humanLabelImportRows(emails: LabeledEmail[]): HumanLabelInput[] {
   const categories = new Set<HumanCategory>([
     "applied",
     "outreach",
@@ -34,21 +33,7 @@ export function humanLabelImportRows(emails: LabeledEmail[]): HumanLabelEventInp
       source_key: `initial-json:${email.email_id}:${email.labeled_at}`,
       category: email.manual_label as HumanCategory,
       source: "review_ui",
-      reviewer_label: "initial-json-import",
       notes: email.review_notes || "",
     };
   });
-}
-
-export function benchmarkSummary(report: JsonObject): JsonObject {
-  return {
-    generated_at: report.generated_at,
-    evaluation_scope: report.evaluation_scope,
-    model_requested: report.model_requested,
-    model_returned: report.model_returned,
-    minimum_top_probability: report.minimum_top_probability,
-    metrics: report.metrics,
-    per_category: report.per_category,
-    confusion_matrix: report.confusion_matrix,
-  };
 }

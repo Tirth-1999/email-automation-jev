@@ -3,15 +3,13 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   createClassificationRun,
   enqueueClassificationEmails,
-  failClassificationResult,
-  findClassifierVersion,
   finishClassificationRun,
   getClassificationRun,
   listQueuedClassificationEmailIds,
-  markClassificationRunning,
   refreshClassificationRunCounters,
-  saveClassificationResult,
+  saveClassificationBatch,
   startClassificationRun,
+  type ClassificationBatchOutcome,
 } from "./classification-repository.js";
 import {
   CLASSIFIER_VERSION,
@@ -108,9 +106,10 @@ async function activeEmailIds(
 async function latestClassifiedIds(database: SupabaseClient, accountId: string): Promise<Set<string>> {
   const ids = await readPagedIds((from, to) =>
     database
-      .from("latest_email_classifications")
+      .from("email_board")
       .select("email_id")
       .eq("gmail_account_id", accountId)
+      .not("classification_id", "is", null)
       .order("email_id")
       .range(from, to),
   );
@@ -125,10 +124,10 @@ async function scopedResultIds(
   if (scope === "uncertain") {
     const ids = await readPagedIds((from, to) =>
       database
-        .from("latest_email_classifications")
+        .from("email_board")
         .select("email_id")
         .eq("gmail_account_id", accountId)
-        .eq("category_decision", "uncertain")
+        .eq("jev_decision", "uncertain")
         .order("email_id")
         .range(from, to),
     );
@@ -136,7 +135,7 @@ async function scopedResultIds(
   }
   const ids = await readPagedIds((from, to) =>
     database
-      .from("email_classification_results")
+      .from("email_classifications")
       .select("email_id,classification_runs!inner(gmail_account_id)")
       .eq("status", "failed")
       .eq("classification_runs.gmail_account_id", accountId)
@@ -184,10 +183,22 @@ export async function previewClassificationSelection(
   };
 }
 
-async function loadEmail(database: SupabaseClient, emailId: string): Promise<StoredEmail> {
-  const { data, error } = await database.from("emails").select(EMAIL_FIELDS).eq("id", emailId).is("deleted_at", null).single();
-  if (error) throw new Error(`Could not load email ${emailId}: ${error.message}`);
-  return data as StoredEmail;
+async function loadEmails(database: SupabaseClient, emailIds: string[]): Promise<Map<string, StoredEmail>> {
+  const chunkSize = 100;
+  const chunks = Array.from(
+    { length: Math.ceil(emailIds.length / chunkSize) },
+    (_, index) => emailIds.slice(index * chunkSize, (index + 1) * chunkSize),
+  );
+  const pages = await Promise.all(chunks.map(async (ids) => {
+    const { data, error } = await database
+      .from("emails")
+      .select(EMAIL_FIELDS)
+      .in("id", ids)
+      .is("deleted_at", null);
+    if (error) throw new Error(`Could not bulk-load classification emails: ${error.message}`);
+    return (data || []) as StoredEmail[];
+  }));
+  return new Map(pages.flat().map((email) => [email.id, email]));
 }
 
 export async function mapConcurrent<T>(values: T[], concurrency: number, mapper: (value: T) => Promise<void>): Promise<void> {
@@ -242,16 +253,19 @@ export async function runClassification(
         break;
       }
       const batch = queuedIds.slice(offset, offset + config.batchSize);
+      const emails = await loadEmails(database, batch);
+      const outcomes: ClassificationBatchOutcome[] = [];
       await mapConcurrent(batch, config.concurrency, async (emailId) => {
-        const claimed = await markClassificationRunning(database, runId, emailId);
-        if (!claimed) return;
         try {
-          const result = await classifyEmail(await loadEmail(database, emailId));
-          await saveClassificationResult(database, runId, emailId, result);
+          const email = emails.get(emailId);
+          if (!email) throw new Error(`Email ${emailId} disappeared before classification`);
+          const result = await classifyEmail(email);
+          outcomes.push({ emailId, result });
         } catch (error) {
-          await failClassificationResult(database, runId, emailId, error);
+          outcomes.push({ emailId, error });
         }
       });
+      await saveClassificationBatch(database, runId, outcomes);
       await refreshClassificationRunCounters(database, runId);
     }
 
@@ -281,14 +295,15 @@ export async function createProductionClassificationRun(
   config: ClassificationWorkerConfig,
 ): Promise<{ run: ClassificationRunRow; queuedEmailCount: number }> {
   validateClassificationConfig(config);
-  const classifier = await findClassifierVersion(database, CLASSIFIER_VERSION);
-  if (!classifier || classifier.status !== "approved") {
-    throw new Error(`Approved classifier ${CLASSIFIER_VERSION} is required`);
-  }
   const selection = await selectClassificationEmailIds(database, accountId, options);
   const run = await createClassificationRun(database, {
     gmail_account_id: accountId,
-    classifier_version_id: classifier.id,
+    classifier_version: CLASSIFIER_VERSION,
+    classifier_config: {
+      judgments: ["category", "action", "urgency", "draft_reply"],
+      reference_strategy: "structured-criteria",
+      draft_probability_threshold: Number(process.env.JEV_DRAFT_REPLY_THRESHOLD || 0.65),
+    },
     run_kind: options.scope === "unclassified" ? "production" : "reprocess",
     model_requested: config.model,
     selection: {

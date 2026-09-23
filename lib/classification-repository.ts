@@ -3,13 +3,6 @@ import type { JevClassification } from "./jev-classifier.js";
 import type {
   ClassificationRunInput,
   ClassificationRunRow,
-  ClassifierVersionInput,
-  ClassifierVersionRow,
-  HumanLabelEventInput,
-  HumanLabelEventRow,
-  JsonObject,
-  ReviewCaseInput,
-  ReviewCaseRow,
 } from "./classification-types.js";
 
 type DatabaseClient = SupabaseClient;
@@ -24,56 +17,6 @@ export function sanitizedClassificationError(error: unknown): string {
     .replace(/Bearer\s+[^\s]+/gi, "Bearer [redacted]")
     .replace(/(api[_-]?key|token|secret|password)\s*[=:]\s*[^\s,;]+/gi, "$1=[redacted]")
     .slice(0, 2_000);
-}
-
-export async function createClassifierVersion(
-  database: DatabaseClient,
-  input: ClassifierVersionInput,
-): Promise<ClassifierVersionRow> {
-  const { data, error } = await database
-    .from("classifier_versions")
-    .insert({
-      ...input,
-      reference_config: input.reference_config || {},
-      benchmark_summary: input.benchmark_summary ?? null,
-    })
-    .select("*")
-    .single();
-  assertNoError(error, "Could not create classifier version");
-  return data as ClassifierVersionRow;
-}
-
-export async function findClassifierVersion(
-  database: DatabaseClient,
-  version: string,
-): Promise<ClassifierVersionRow | null> {
-  const { data, error } = await database
-    .from("classifier_versions")
-    .select("*")
-    .eq("version", version)
-    .maybeSingle();
-  assertNoError(error, "Could not load classifier version");
-  return data as ClassifierVersionRow | null;
-}
-
-export async function approveClassifierVersion(
-  database: DatabaseClient,
-  versionId: string,
-  benchmarkSummary: JsonObject,
-): Promise<ClassifierVersionRow> {
-  const { data, error } = await database
-    .from("classifier_versions")
-    .update({
-      status: "approved",
-      benchmark_summary: benchmarkSummary,
-      approved_at: new Date().toISOString(),
-    })
-    .eq("id", versionId)
-    .eq("status", "draft")
-    .select("*")
-    .single();
-  assertNoError(error, "Could not approve classifier version");
-  return data as ClassifierVersionRow;
 }
 
 export async function createClassificationRun(
@@ -97,7 +40,7 @@ export async function enqueueClassificationEmails(
   if (emailIds.length === 0) return 0;
   const rows = [...new Set(emailIds)].map((emailId) => ({ run_id: runId, email_id: emailId }));
   const { data, error } = await database
-    .from("email_classification_results")
+    .from("email_classifications")
     .upsert(rows, { onConflict: "run_id,email_id", ignoreDuplicates: true })
     .select("id");
   assertNoError(error, "Could not enqueue emails for classification");
@@ -105,46 +48,49 @@ export async function enqueueClassificationEmails(
   return data?.length || 0;
 }
 
-export async function markClassificationRunning(
-  database: DatabaseClient,
-  runId: string,
-  emailId: string,
-): Promise<boolean> {
-  const current = await database
-    .from("email_classification_results")
-    .select("attempt_count")
-    .eq("run_id", runId)
-    .eq("email_id", emailId)
-    .eq("status", "queued")
-    .maybeSingle();
-  assertNoError(current.error, "Could not inspect queued classification");
-  if (!current.data) return false;
-  const { data, error } = await database
-    .from("email_classification_results")
-    .update({
-      status: "running",
-      started_at: new Date().toISOString(),
-      attempt_count: Number((current.data as { attempt_count: number }).attempt_count || 0) + 1,
-      error_message: null,
-    })
-    .eq("run_id", runId)
-    .eq("email_id", emailId)
-    .eq("status", "queued")
-    .select("id");
-  assertNoError(error, "Could not mark classification as running");
-  return Boolean(data?.length);
+export interface ClassificationBatchOutcome {
+  emailId: string;
+  result?: JevClassification;
+  error?: unknown;
 }
 
-export async function saveClassificationResult(
-  database: DatabaseClient,
+export function classificationBatchRows(
   runId: string,
-  emailId: string,
-  result: JevClassification,
-): Promise<void> {
-  const { error } = await database
-    .from("email_classification_results")
-    .update({
+  outcomes: ClassificationBatchOutcome[],
+  classifiedAt: string,
+): Array<Record<string, unknown>> {
+  return outcomes.map((outcome) => {
+    if (!outcome.result) {
+      return {
+        run_id: runId,
+        email_id: outcome.emailId,
+        status: "failed",
+        attempt_count: 1,
+        category: null,
+        category_decision: null,
+        category_confidence: null,
+        category_top_probability: null,
+        category_probabilities: null,
+        next_action: null,
+        action_confidence: null,
+        action_probabilities: null,
+        urgency_score: null,
+        urgency_confidence: null,
+        urgency_probabilities: null,
+        draft_probability: null,
+        should_draft: null,
+        model_returned: null,
+        input_tokens: null,
+        error_message: sanitizedClassificationError(outcome.error || "Unknown classification failure"),
+        classified_at: classifiedAt,
+      };
+    }
+    const result = outcome.result;
+    return {
+      run_id: runId,
+      email_id: outcome.emailId,
       status: "succeeded",
+      attempt_count: 1,
       category: result.category,
       category_decision: result.decision,
       category_confidence: result.confidence,
@@ -161,38 +107,33 @@ export async function saveClassificationResult(
       model_returned: result.model,
       input_tokens: result.input_tokens,
       error_message: null,
-      classified_at: new Date().toISOString(),
-    })
-    .eq("run_id", runId)
-    .eq("email_id", emailId)
-    .eq("status", "running");
-  assertNoError(error, "Could not save classification result");
+      classified_at: classifiedAt,
+    };
+  });
 }
 
-export async function failClassificationResult(
+export async function saveClassificationBatch(
   database: DatabaseClient,
   runId: string,
-  emailId: string,
-  error: unknown,
+  outcomes: ClassificationBatchOutcome[],
 ): Promise<void> {
-  const errorMessage = sanitizedClassificationError(error);
-  const { error: databaseError } = await database
-    .from("email_classification_results")
-    .update({
-      status: "failed",
-      error_message: errorMessage,
-      classified_at: new Date().toISOString(),
-    })
-    .eq("run_id", runId)
-    .eq("email_id", emailId)
-    .eq("status", "running");
-  assertNoError(databaseError, "Could not record classification failure");
-  const runResult = await database
-    .from("classification_runs")
-    .update({ error_message: errorMessage })
-    .eq("id", runId)
-    .eq("status", "running");
-  assertNoError(runResult.error, "Could not record the latest classification error");
+  if (outcomes.length === 0) return;
+  const classifiedAt = new Date().toISOString();
+  const rows = classificationBatchRows(runId, outcomes, classifiedAt);
+  const { error } = await database
+    .from("email_classifications")
+    .upsert(rows, { onConflict: "run_id,email_id", ignoreDuplicates: false });
+  assertNoError(error, "Could not save classification batch");
+
+  const latestFailure = [...outcomes].reverse().find((outcome) => !outcome.result);
+  if (latestFailure) {
+    const runResult = await database
+      .from("classification_runs")
+      .update({ error_message: sanitizedClassificationError(latestFailure.error) })
+      .eq("id", runId)
+      .eq("status", "running");
+    assertNoError(runResult.error, "Could not record the latest classification error");
+  }
 }
 
 export async function refreshClassificationRunCounters(
@@ -235,7 +176,7 @@ export async function listRecentClassificationRuns(
   limit = 20,
 ): Promise<ClassificationRunRow[]> {
   const { data, error } = await database
-    .from("classification_run_summary")
+    .from("classification_runs")
     .select("*")
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -251,7 +192,7 @@ export async function listQueuedClassificationEmailIds(
   const pageSize = 1_000;
   for (let offset = 0; ; offset += pageSize) {
     const { data, error } = await database
-      .from("email_classification_results")
+      .from("email_classifications")
       .select("email_id")
       .eq("run_id", runId)
       .eq("status", "queued")
@@ -273,7 +214,7 @@ export async function startClassificationRun(
     throw new Error(`Classification run ${runId} is already terminal (${current.status})`);
   }
   const requeue = await database
-    .from("email_classification_results")
+    .from("email_classifications")
     .update({ status: "queued", started_at: null })
     .eq("run_id", runId)
     .eq("status", "running");
@@ -308,74 +249,4 @@ export async function finishClassificationRun(
     .eq("id", runId);
   assertNoError(error, "Could not finish classification run");
   await refreshClassificationRunCounters(database, runId);
-}
-
-export async function appendHumanLabelEvent(
-  database: DatabaseClient,
-  input: HumanLabelEventInput,
-): Promise<HumanLabelEventRow> {
-  const { data, error } = await database
-    .from("email_human_label_events")
-    .insert({
-      ...input,
-      source_key: input.source_key ?? null,
-      category: input.category ?? null,
-      next_action: input.next_action ?? null,
-      urgency_level: input.urgency_level ?? null,
-      draft_needed: input.draft_needed ?? null,
-      reviewer_id: input.reviewer_id ?? null,
-      reviewer_label: input.reviewer_label ?? null,
-      notes: input.notes || "",
-      supersedes_event_id: input.supersedes_event_id ?? null,
-    })
-    .select("*")
-    .single();
-  assertNoError(error, "Could not append human label event");
-  return data as HumanLabelEventRow;
-}
-
-export async function createClassificationReviewCase(
-  database: DatabaseClient,
-  input: ReviewCaseInput,
-): Promise<ReviewCaseRow> {
-  const { data, error } = await database
-    .from("classification_review_cases")
-    .insert({ ...input, classification_result_id: input.classification_result_id ?? null })
-    .select("*")
-    .single();
-  assertNoError(error, "Could not create classification review case");
-  return data as ReviewCaseRow;
-}
-
-export async function saveLlmReviewSuggestion(
-  database: DatabaseClient,
-  caseId: string,
-  input: {
-    provider: string;
-    model: string;
-    promptVersion: string;
-    suggestion: JsonObject;
-    inputTokens?: number | null;
-    outputTokens?: number | null;
-  },
-): Promise<ReviewCaseRow> {
-  const { data, error } = await database
-    .from("classification_review_cases")
-    .update({
-      status: "llm_completed",
-      llm_provider: input.provider,
-      llm_model: input.model,
-      llm_prompt_version: input.promptVersion,
-      llm_suggestion: input.suggestion,
-      llm_input_tokens: input.inputTokens ?? null,
-      llm_output_tokens: input.outputTokens ?? null,
-      llm_error_message: null,
-      requested_at: new Date().toISOString(),
-    })
-    .eq("id", caseId)
-    .in("status", ["pending", "llm_requested"])
-    .select("*")
-    .single();
-  assertNoError(error, "Could not save LLM review suggestion");
-  return data as ReviewCaseRow;
 }

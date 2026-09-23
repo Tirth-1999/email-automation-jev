@@ -25,7 +25,7 @@ export interface ReviewBatch {
   id: string;
   created_at: string;
   count: number;
-  strategy: "initial" | "balanced" | "random";
+  strategy: "initial" | "balanced" | "random" | "correction";
 }
 
 export interface ReviewPool {

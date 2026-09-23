@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  benchmarkSummary,
   humanDatasetVersion,
   humanLabelImportRows,
 } from "../lib/classification-bootstrap.js";
@@ -38,7 +37,6 @@ test("human label imports have stable idempotency keys", () => {
     source_key: "initial-json:email-1:2026-01-02T00:00:00.000Z",
     category: "applied",
     source: "review_ui",
-    reviewer_label: "initial-json-import",
     notes: "",
   });
 });
@@ -51,14 +49,4 @@ test("dataset version is deterministic and order independent", () => {
     humanDatasetVersion([first, second]),
     humanDatasetVersion([first, { ...second, manual_label: "offer" }]),
   );
-});
-
-test("benchmark summary excludes per-email results", () => {
-  const summary = benchmarkSummary({
-    generated_at: "now",
-    metrics: { raw_accuracy: 0.9 },
-    results: [{ email_id: "private-email" }],
-  });
-  assert.deepEqual(summary.metrics, { raw_accuracy: 0.9 });
-  assert.equal("results" in summary, false);
 });
