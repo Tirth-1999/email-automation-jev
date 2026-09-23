@@ -13,7 +13,7 @@ Build a dependable job-email workspace that:
 5. lets a human correct decisions and grow a trustworthy labeled dataset;
 6. optionally asks an LLM for a second opinion on difficult cases without treating that opinion as truth;
 7. presents operations, review, evaluation, classified emails, and analytics in one dashboard;
-8. later groups emails into job applications and adds a read-only AI assistant over the resulting data.
+8. groups emails into job applications, adds human-confirmed AI review for difficult decisions, and later adds a read-only mailbox assistant.
 
 ## Current status
 
@@ -31,7 +31,8 @@ Build a dependable job-email workspace that:
 | 9 | Email decisions and analytics | Complete; Kanban lanes, category/action filtering, live mailbox aggregates, confidence, benchmark quality, and durable-run performance | `npm run dashboard`<br>Open **Application Board → Emails** or **Analytics**<br>Click an Analytics category/action bar to inspect its source emails |
 | 10 | Application grouping, lifecycle, and application board | Complete for the classified corpus; deterministic identity rules plus confidence-gated Jev relationship checks handle reused Gmail threads, with automatic materialization, explainable ghosting, manual review, application Kanban, and Sankey | Apply `006_application_lifecycle.sql` once<br>Normally publish from **Command Center**; recovery: `npm run applications:group`<br>Open **Application Board → Applications** or **Analytics** |
 | 11 | Scheduling, observability, and draft assistance | Complete; hourly incremental orchestration, atomic lease, structured body-free logs, health probe, optional failure webhook, and reviewed drafts | Apply `007_operations_automation.sql` once<br>Test: `npm run automate:once`<br>Continuous runner: `npm run scheduler`<br>Probe: `GET /api/operations/health` |
-| 12 | AI data assistant / RAG | Later roadmap | Not available yet |
+| 12 | Targeted AI review, relationships, stars, and streaming reply workspace | Complete; migration 008 is live and the AI workspace preserves Jev, LLM, and human decisions separately | Apply `008_ai_assistance.sql` once<br>`npm run dashboard`, then open **AI** or **Application Board**<br>Optional measured eval: `npm run ai:evaluate -- --limit=20` |
+| 13 | Read-only AI chat / RAG | Later roadmap; the visual shell is present but has no query tools yet | Not available yet |
 
 Run all commands from the repository root. Keep secrets in `.env`, use `.env.example` as the checklist, and never commit `.env`, `.gmail-token.json`, or `data/labeling/generated/`. `npm run check` is the final validation command after every implemented phase.
 
@@ -61,14 +62,15 @@ Run all commands from the repository root. Keep secrets in `.env`, use `.env.exa
 
 ## Dashboard navigation
 
-The unified dashboard uses four top-level product areas:
+The unified dashboard uses five top-level product areas:
 
 1. **Command Center** — configure, start, resume, and monitor sync or classification runs.
 2. **Application Board** — switch between **Emails** for message-level decisions and **Applications** for grouped job lifecycles.
 3. **Jev Lab** — one model-development workspace with **Label Set**, **Quality**, and **Performance** modes. Label Set maintains human ground truth; Quality compares Jev with those labels; Performance measures live latency and throughput without saving experimental decisions as production results.
 4. **Analytics** — inspect category, action, confidence, accuracy, and processing trends.
+5. **AI** — review high-value Jev decisions through a schema-constrained LLM, inspect exact structured inputs and outputs, and explicitly confirm any application relationship change.
 
-Command Center owns production operations. Jev Lab owns model development and testing. Other tabs consume durable results and never hide long-running work inside a browser request. The planned AI Assistant remains in the roadmap but is intentionally absent from navigation until it is functional.
+Command Center owns production operations. Jev Lab owns model development and testing. The AI workspace is a bounded second-opinion workflow, not a replacement classifier. Its mailbox-chat shell remains intentionally disabled until read-only query tools and citations are implemented.
 
 ## Target project layout
 
@@ -480,7 +482,25 @@ Gmail push notifications remain a later optimization. Hourly incremental history
 
 ---
 
-## Phase 12 — AI Assistant / RAG roadmap
+## Phase 12 — Targeted AI review and reply workspace
+
+Status: complete. Migration 008 extends the existing `emails` and `applications` tables rather than creating more tables.
+
+- Jev remains the fast primary classifier. GPT-4o Mini reviews the high-value `reply_needed`, `interview_assessment`, and `offer` queue with a strict JSON schema.
+- The UI exposes the exact bounded input, schema-validated output, model, confidence, evidence, and whether the reviewer disagrees with Jev.
+- Application relationship recommendations require company plus role/requisition evidence. A shared Gmail or job-board thread is insufficient, and the user must explicitly confirm any join at 85% or higher relationship confidence.
+- The Reply Needed modal keeps the email and streamed draft side by side, restores saved drafts, supports configured model choices, and never sends mail.
+- Reply cards show whether a draft is waiting, suggested, or human-reviewed.
+- Application cards can be starred without changing their lifecycle status. Starred is a durable secondary view; the original card remains in its status lane.
+- Important application lanes appear first, wrap responsively, and do not require horizontal page scrolling.
+- `npm run ai:evaluate -- --limit=20` evaluates the structured reviewer against the human-labeled high-value subset and writes a private JSON report. This is a measured advisory-model eval, not new Jev training.
+- The current mailbox was regrouped after the corrected outreach/ghosting rules: cold outreach remains Outreach, while Ghosted requires a real back-and-forth conversation ending in an unanswered outgoing message.
+
+The OpenAI integration uses the Responses API with `store: false`, strict structured output for reviews, and streamed text deltas for drafts. Human labels remain the only ground truth.
+
+---
+
+## Phase 13 — AI Assistant / RAG roadmap
 
 This is intentionally deferred until classification and application grouping are reliable. A future **AI Assistant** will support questions such as “How many applications did I complete this month?” and “Show interviews needing action.” Its first version is read-only and will enter navigation only when functional.
 
@@ -492,7 +512,7 @@ This is intentionally deferred until classification and application grouping are
 - Do not let the assistant send, delete, relabel, or modify email initially.
 - Add vector storage only if measured semantic retrieval quality justifies it; Supabase `pgvector` is the first option before another datastore.
 
-This feature remains roadmap/technical debt until its prerequisites are complete.
+This feature remains roadmap/technical debt. The dashboard includes only a disabled visual shell so the future product location is clear; it does not pretend to answer mailbox questions yet.
 
 ---
 
@@ -523,8 +543,9 @@ The duplicate dashboard plan and superseded labeling UI/server were removed afte
 
 ## Delivery order from here
 
-1. Finish Phase 7 by identifying a sustainable Jev concurrency and classifying the remaining mailbox.
-2. Validate Phase 10 grouping quality on the fully classified mailbox and correct ambiguous applications in the Applications workspace.
-3. Deploy Phase 11 with `npm run automate:once` hourly, or keep `npm run scheduler` alive under a process manager.
+1. Review the targeted AI queue and confirm or reject recommendations; do not silently promote LLM output to ground truth.
+2. Run `npm run ai:evaluate -- --limit=20` when API usage is acceptable, inspect the private report, and tune prompts only against development examples.
+3. Deploy the existing hourly automation with `npm run automate:once` or keep `npm run scheduler` alive under a process manager.
+4. Begin Phase 13 only after defining read-only query tools, account scoping, and evidence citations.
 
 For every phase: confirm scope, implement, run automated checks, verify acceptance criteria together, update this plan, and only then begin the next phase.

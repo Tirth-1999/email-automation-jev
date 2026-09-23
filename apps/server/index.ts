@@ -51,8 +51,15 @@ import {
   DEFAULT_REPLY_PROFILE,
   generateReplyWithOpenAI,
   isReplyDraftEligible,
+  streamReplyWithOpenAI,
   type ReplyContext,
 } from "../../lib/reply-drafter.js";
+import {
+  buildLlmReviewPayload,
+  reviewEmailWithOpenAI,
+  shouldRequestLlmReview,
+  type LlmReviewInput,
+} from "../../lib/llm-reviewer.js";
 import {
   benchmarkForAnalytics,
   buildAnalyticsSnapshot,
@@ -669,6 +676,68 @@ async function applicationDetail(applicationId: string) {
   return { application, messages: emails, events: events || [] };
 }
 
+function availableOpenAiModels(): string[] {
+  const configured = (process.env.OPENAI_MODELS || process.env.OPENAI_MODEL || "gpt-4o-mini")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return [...new Set(configured.length ? configured : ["gpt-4o-mini"])];
+}
+
+function replyContext(stored: Record<string, unknown>): ReplyContext {
+  return {
+    direction: stored.direction as ReplyContext["direction"],
+    from_name: typeof stored.from_name === "string" ? stored.from_name : null,
+    from_email: typeof stored.from_email === "string" ? stored.from_email : null,
+    to_recipients: Array.isArray(stored.to_recipients) ? stored.to_recipients as NonNullable<ReplyContext["to_recipients"]> : [],
+    subject: String(stored.subject || ""),
+    snippet: String(stored.snippet || ""),
+    body_text: String(stored.body_text || ""),
+    internal_date: String(stored.internal_date || ""),
+    effectiveCategory: typeof stored.effective_category === "string" ? stored.effective_category : null,
+    nextAction: typeof stored.next_action === "string" ? stored.next_action : null,
+    humanNotes: String(stored.human_label_notes || ""),
+  };
+}
+
+async function candidateApplications(stored: Record<string, unknown>) {
+  const accountId = String(stored.gmail_account_id || "");
+  const { data: currentLink } = await database
+    .from("application_messages")
+    .select("application_id")
+    .eq("email_id", String(stored.id || stored.email_id || ""))
+    .maybeSingle();
+  const stopwords = new Set(["application", "position", "opportunity", "interview", "engineer", "senior", "junior", "update", "thank", "thanks", "reply", "required", "complete"]);
+  const domain = String(stored.from_email || "").split("@")[1]?.split(".")[0] || "";
+  const tokens = [...new Set(`${domain} ${stored.from_name || ""} ${stored.subject || ""}`
+    .toLowerCase()
+    .match(/[a-z0-9]{5,}/g) || [])]
+    .filter((token) => !stopwords.has(token))
+    .slice(0, 7);
+  let query = database
+    .from("application_board")
+    .select("id,company,role,latest_subject,last_activity_at")
+    .eq("gmail_account_id", accountId)
+    .order("last_activity_at", { ascending: false })
+    .limit(30);
+  if (currentLink?.application_id) query = query.neq("id", currentLink.application_id);
+  if (tokens.length) {
+    query = query.or(tokens.flatMap((token) => [
+      `company.ilike.*${token}*`,
+      `role.ilike.*${token}*`,
+      `latest_subject.ilike.*${token}*`,
+    ]).join(","));
+  }
+  const { data, error } = await query;
+  if (error) throw new Error(`Could not load relationship candidates: ${error.message}`);
+  return (data || []).map((application) => ({
+    id: String(application.id),
+    company: typeof application.company === "string" ? application.company : null,
+    role: typeof application.role === "string" ? application.role : null,
+    latestSubject: typeof application.latest_subject === "string" ? application.latest_subject : null,
+  }));
+}
+
 async function saveLabel(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const input = await body(request);
   const emailId = typeof input.email_id === "string" ? input.email_id : "";
@@ -968,8 +1037,20 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     const { data, error, count } = await query;
     if (error) throw new Error(`Could not load Application Board. Apply migration 006 and run npm run applications:group. ${error.message}`);
+    const applicationRows = data || [];
+    const applicationIds = applicationRows.map((application) => String(application.id));
+    const starred = new Map<string, { is_starred: boolean; starred_at: string | null }>();
+    for (let starOffset = 0; starOffset < applicationIds.length; starOffset += 100) {
+      const { data: starRows, error: starError } = await database
+        .from("applications")
+        .select("id,is_starred,starred_at")
+        .in("id", applicationIds.slice(starOffset, starOffset + 100));
+      if (starError) throw new Error(`Could not load starred applications. Apply migration 008. ${starError.message}`);
+      for (const row of starRows || []) starred.set(String(row.id), { is_starred: Boolean(row.is_starred), starred_at: row.starred_at as string | null });
+    }
+    const enriched = applicationRows.map((application) => ({ ...application, ...(starred.get(String(application.id)) || { is_starred: false, starred_at: null }) }));
     const total = count ?? 0;
-    json(response, 200, { applications: data || [], total, has_more: offset + (data?.length || 0) < total });
+    json(response, 200, { applications: enriched, total, has_more: offset + applicationRows.length < total });
     return;
   }
   if (request.method === "GET" && path === "/api/applications/detail") {
@@ -1020,6 +1101,24 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     json(response, 200, { application: data });
     return;
   }
+  if (request.method === "POST" && path === "/api/applications/star") {
+    const input = await body(request);
+    const applicationId = typeof input.application_id === "string" ? input.application_id : "";
+    const starred = input.starred === true;
+    if (!applicationId) {
+      json(response, 400, { error: "application_id is required" });
+      return;
+    }
+    const { data, error } = await database
+      .from("applications")
+      .update({ is_starred: starred, starred_at: starred ? new Date().toISOString() : null })
+      .eq("id", applicationId)
+      .select("id,is_starred,starred_at")
+      .single();
+    if (error) throw new Error(`Could not save star. Apply migration 008. ${error.message}`);
+    json(response, 200, { application: data });
+    return;
+  }
   if (request.method === "GET" && path === "/api/board") {
     const limit = Math.max(1, Math.min(1_000, Number(requestUrl.searchParams.get("limit") || "500")));
     const offset = Math.max(0, Number(requestUrl.searchParams.get("offset") || "0"));
@@ -1039,13 +1138,26 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     const { data, error, count } = await query;
     if (error) throw new Error(`Could not load Email Board: ${error.message}`);
+    const emailRows = data || [];
+    const emailIds = emailRows.map((email) => String(email.email_id));
+    const assistance = new Map<string, Record<string, unknown>>();
+    for (let assistanceOffset = 0; assistanceOffset < emailIds.length; assistanceOffset += 100) {
+      const { data: assistanceRows, error: assistanceError } = await database
+        .from("emails")
+        .select("id,reply_draft_status,reply_draft_generated_at,llm_review_category,llm_review_confidence,llm_review_should_override,llm_reviewed_at")
+        .in("id", emailIds.slice(assistanceOffset, assistanceOffset + 100));
+      if (assistanceError) throw new Error(`Could not load AI assistance state: ${assistanceError.message}`);
+      for (const row of assistanceRows || []) assistance.set(String(row.id), row as Record<string, unknown>);
+    }
+    const enrichedEmails = emailRows.map((email) => ({ ...email, ...(assistance.get(String(email.email_id)) || {}) }));
     const total = count ?? 0;
     json(response, 200, {
-      emails: data || [],
+      emails: enrichedEmails,
       total,
-      has_more: offset + (data?.length || 0) < total,
+      has_more: offset + emailRows.length < total,
       reply_profile: process.env.REPLY_WRITING_PROFILE?.trim() || DEFAULT_REPLY_PROFILE,
-      reply_provider_ready: Boolean(process.env.OPENAI_API_KEY?.trim() && process.env.OPENAI_MODEL?.trim()),
+      reply_provider_ready: Boolean(process.env.OPENAI_API_KEY?.trim()),
+      reply_models: availableOpenAiModels(),
     });
     return;
   }
@@ -1102,24 +1214,14 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
     const apiKey = process.env.OPENAI_API_KEY?.trim() || "";
-    const model = process.env.OPENAI_MODEL?.trim() || "";
+    const requestedModel = typeof input.model === "string" ? input.model.trim() : "";
+    const models = availableOpenAiModels();
+    const model = requestedModel && models.includes(requestedModel) ? requestedModel : (models[0] ?? "gpt-4o-mini");
     if (!apiKey || !model) {
       json(response, 400, { error: "Set OPENAI_API_KEY and OPENAI_MODEL before generating reply drafts" });
       return;
     }
-    const context: ReplyContext = {
-      direction: stored.direction as ReplyContext["direction"],
-      from_name: typeof stored.from_name === "string" ? stored.from_name : null,
-      from_email: typeof stored.from_email === "string" ? stored.from_email : null,
-      to_recipients: Array.isArray(stored.to_recipients) ? stored.to_recipients as NonNullable<ReplyContext["to_recipients"]> : [],
-      subject: String(stored.subject || ""),
-      snippet: String(stored.snippet || ""),
-      body_text: String(stored.body_text || ""),
-      internal_date: String(stored.internal_date || ""),
-      effectiveCategory: typeof stored.effective_category === "string" ? stored.effective_category : null,
-      nextAction: typeof stored.next_action === "string" ? stored.next_action : null,
-      humanNotes: String(stored.human_label_notes || ""),
-    };
+    const context = replyContext(stored);
     const draft = await generateReplyWithOpenAI(apiKey, model, context, instructions);
     const generatedAt = new Date().toISOString();
     const { error } = await database
@@ -1137,6 +1239,56 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       .eq("id", emailId);
     if (error) throw new Error(`Could not save reply draft: ${error.message}`);
     json(response, 200, { draft: { ...draft, generated_at: generatedAt } });
+    return;
+  }
+  if (request.method === "POST" && path === "/api/board/draft/stream") {
+    const input = await body(request);
+    const emailId = typeof input.email_id === "string" ? input.email_id : "";
+    const instructions = typeof input.instructions === "string" ? input.instructions.slice(0, 8_000) : "";
+    const models = availableOpenAiModels();
+    const requestedModel = typeof input.model === "string" ? input.model.trim() : "";
+    const model = requestedModel && models.includes(requestedModel) ? requestedModel : (models[0] ?? "gpt-4o-mini");
+    if (!emailId) {
+      json(response, 400, { error: "email_id is required" });
+      return;
+    }
+    const stored = await boardEmail(emailId);
+    if (!isReplyDraftEligible(typeof stored.effective_category === "string" ? stored.effective_category : null)) {
+      json(response, 400, { error: "Reply drafts are available only for Reply Needed emails" });
+      return;
+    }
+    const apiKey = process.env.OPENAI_API_KEY?.trim() || "";
+    if (!apiKey) {
+      json(response, 400, { error: "Set OPENAI_API_KEY before generating reply drafts" });
+      return;
+    }
+    response.writeHead(200, {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+    });
+    const emit = (value: unknown) => response.write(`${JSON.stringify(value)}\n`);
+    try {
+      const context = replyContext(stored);
+      const draft = await streamReplyWithOpenAI(apiKey, model, context, instructions, (delta) => emit({ type: "delta", delta }));
+      const generatedAt = new Date().toISOString();
+      const { error } = await database.from("emails").update({
+        reply_draft_subject: draft.subject,
+        reply_draft_body: draft.body,
+        reply_draft_instructions: instructions,
+        reply_draft_provider: draft.provider,
+        reply_draft_model: draft.model,
+        reply_draft_generated_at: generatedAt,
+        reply_draft_status: "suggested",
+        reply_draft_reviewed_at: null,
+      }).eq("id", emailId);
+      if (error) throw new Error(`Could not save reply draft: ${error.message}`);
+      emit({ type: "done", draft: { ...draft, generated_at: generatedAt } });
+    } catch (error) {
+      emit({ type: "error", error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      response.end();
+    }
     return;
   }
   if (request.method === "POST" && path === "/api/board/draft/save") {
@@ -1168,6 +1320,98 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       draft: { subject, body: draftBody, status: "reviewed", reviewed_at: reviewedAt },
       sent: false,
     });
+    return;
+  }
+  if (request.method === "GET" && path === "/api/ai/reviews") {
+    const limit = Math.max(1, Math.min(500, Number(requestUrl.searchParams.get("limit") || "500")));
+    const { data: boardRows, error: boardError, count } = await database
+      .from("email_board")
+      .select("email_id,internal_date,from_name,from_email,subject,snippet,effective_category,jev_decision,category_top_probability,next_action", { count: "exact" })
+      .in("effective_category", ["reply_needed", "interview_assessment", "offer"])
+      .order("internal_date", { ascending: false })
+      .limit(limit);
+    if (boardError) throw new Error(`Could not load AI review queue: ${boardError.message}`);
+    const ids = (boardRows || []).map((row) => String(row.email_id));
+    const stored = new Map<string, Record<string, unknown>>();
+    for (let offset = 0; offset < ids.length; offset += 100) {
+      const { data, error } = await database
+        .from("emails")
+        .select("id,llm_review_category,llm_review_confidence,llm_review_should_override,llm_review_input,llm_review_output,llm_review_model,llm_reviewed_at")
+        .in("id", ids.slice(offset, offset + 100));
+      if (error) throw new Error(`Could not load saved AI reviews. Apply migration 008. ${error.message}`);
+      for (const row of data || []) stored.set(String(row.id), row as Record<string, unknown>);
+    }
+    const candidates = (boardRows || []).map((row) => ({ ...row, ...(stored.get(String(row.email_id)) || {}) }));
+    json(response, 200, {
+      candidates,
+      total: count ?? candidates.length,
+      models: availableOpenAiModels(),
+      ready: Boolean(process.env.OPENAI_API_KEY?.trim()),
+      policy: "Jev remains primary. AI reviews high-value lanes and stores a structured recommendation; it does not silently overwrite Jev or a human correction.",
+    });
+    return;
+  }
+  if (request.method === "POST" && path === "/api/ai/review") {
+    const input = await body(request);
+    const emailId = typeof input.email_id === "string" ? input.email_id : "";
+    const models = availableOpenAiModels();
+    const requestedModel = typeof input.model === "string" ? input.model.trim() : "";
+    const model = requestedModel && models.includes(requestedModel) ? requestedModel : (models[0] ?? "gpt-4o-mini");
+    const apiKey = process.env.OPENAI_API_KEY?.trim() || "";
+    if (!emailId || !apiKey) {
+      json(response, 400, { error: !emailId ? "email_id is required" : "Set OPENAI_API_KEY before running AI review" });
+      return;
+    }
+    const stored = await boardEmail(emailId);
+    const reviewInput: LlmReviewInput = {
+      ...replyContext(stored),
+      emailId,
+      jevCategory: typeof stored.jev_decision === "string" ? stored.jev_decision : null,
+      jevConfidence: typeof stored.category_top_probability === "number" ? stored.category_top_probability : null,
+      nextAction: typeof stored.next_action === "string" ? stored.next_action : null,
+      candidateApplications: await candidateApplications(stored),
+    };
+    if (!shouldRequestLlmReview(reviewInput.jevCategory, reviewInput.jevConfidence)) {
+      json(response, 400, { error: "This decision is not in the targeted AI review policy" });
+      return;
+    }
+    const decision = await reviewEmailWithOpenAI(apiKey, model, reviewInput);
+    const reviewedAt = new Date().toISOString();
+    const exactInput = buildLlmReviewPayload(reviewInput);
+    const { error } = await database.from("emails").update({
+      llm_review_category: decision.category,
+      llm_review_confidence: decision.confidence,
+      llm_review_should_override: decision.should_override_jev,
+      llm_review_input: exactInput,
+      llm_review_output: decision,
+      llm_review_model: model,
+      llm_reviewed_at: reviewedAt,
+    }).eq("id", emailId);
+    if (error) throw new Error(`Could not save AI review. Apply migration 008. ${error.message}`);
+    json(response, 200, { decision, input: exactInput, model, reviewed_at: reviewedAt });
+    return;
+  }
+  if (request.method === "POST" && path === "/api/ai/relationship/apply") {
+    const input = await body(request);
+    const emailId = typeof input.email_id === "string" ? input.email_id : "";
+    const applicationId = typeof input.application_id === "string" ? input.application_id : "";
+    if (!emailId || !applicationId) {
+      json(response, 400, { error: "email_id and application_id are required" });
+      return;
+    }
+    const stored = await boardEmail(emailId);
+    const output = stored.llm_review_output as { related_application_id?: unknown; relationship_confidence?: unknown } | null;
+    if (output?.related_application_id !== applicationId || Number(output.relationship_confidence || 0) < 0.85) {
+      json(response, 400, { error: "A saved AI relationship recommendation with at least 85% confidence is required" });
+      return;
+    }
+    const { error } = await database.from("application_messages").update({
+      application_id: applicationId,
+      association_source: "manual",
+      association_confidence: Number(output.relationship_confidence),
+    }).eq("email_id", emailId);
+    if (error) throw new Error(`Could not join email to application: ${error.message}`);
+    json(response, 200, { email_id: emailId, application_id: applicationId, joined: true });
     return;
   }
   if (request.method === "GET" && path === "/api/benchmark") {

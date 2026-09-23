@@ -18,6 +18,7 @@
           <button class="view-tab" data-view="application_board" type="button" role="tab" aria-selected="false">Application Board</button>
           <button class="view-tab" data-view="lab" type="button" role="tab" aria-selected="false">Jev Lab</button>
           <button class="view-tab" data-view="analytics" type="button" role="tab" aria-selected="false">Analytics</button>
+          <button class="view-tab" data-view="ai" type="button" role="tab" aria-selected="false">AI</button>
         </nav>
         <div class="top-actions">
           <button id="openResample" class="button add" type="button">Add emails</button>
@@ -376,6 +377,36 @@
         </section>
       </main>
 
+      <main id="aiView" class="ai-view" hidden>
+        <section class="command-heading">
+          <div>
+            <p class="eyebrow">AI review · High-value decisions</p>
+            <h2>AI workspace</h2>
+            <p>Jev remains the fast primary classifier. This workspace uses a structured LLM review for Reply Needed, Interview / Assessment, and Offer decisions, while preserving both judgments.</p>
+          </div>
+          <button id="refreshAi" class="button secondary" type="button">Refresh queue</button>
+        </section>
+        <section class="ai-layout">
+          <section class="command-panel ai-review-panel">
+            <div class="panel-heading"><div><h3>Decision review queue</h3><small>Choose an entry to inspect its exact JSON contract</small></div><span id="aiReviewCount">0 candidates</span></div>
+            <div id="aiLaneSummary" class="ai-lane-summary"></div>
+            <div id="aiReviewQueue" class="ai-review-queue"><p class="board-empty">Loading targeted decisions…</p></div>
+          </section>
+          <section class="command-panel ai-contract-panel">
+            <div class="panel-heading"><div><h3>Structured review</h3><small>Input and output are stored with the email</small></div><select id="aiReviewModel" aria-label="AI review model"></select></div>
+            <div id="aiReviewDetail" class="ai-review-detail"><p class="board-empty">Select an email to inspect or run its AI review.</p></div>
+          </section>
+          <section class="command-panel ai-chat-shell">
+            <div class="panel-heading"><div><h3>AI Chat</h3><small>Mailbox questions are planned for the next iteration</small></div><span class="ai-coming-soon">Preview</span></div>
+            <div class="chat-preview">
+              <div class="chat-message assistant">Ask questions across applications, replies, and outcomes from one place.</div>
+              <div class="chat-suggestion-row"><span>How many interviews are active?</span><span>What needs a reply today?</span><span>Show my starred applications</span></div>
+            </div>
+            <div class="chat-composer"><input type="text" disabled placeholder="Mailbox chat will be connected next" /><button class="button primary" type="button" disabled>Send</button></div>
+          </section>
+        </section>
+      </main>
+
       <footer class="progress-block" aria-live="polite">
         <div class="progress-copy">
           <strong id="progressText">0 / 150 reviewed</strong>
@@ -423,6 +454,28 @@
           <button id="confirmResample" class="button primary" type="button">Add unique emails</button>
         </div>
       </form>
+    </dialog>
+    <dialog id="replyDialog" class="reply-dialog">
+      <div class="reply-dialog-shell">
+        <header class="reply-dialog-header"><div><p class="eyebrow">Reply Needed · Draft workspace</p><h2 id="replyDialogTitle">Email reply</h2></div><button id="closeReplyDialog" class="icon-button" type="button" aria-label="Close reply workspace">×</button></header>
+        <div class="reply-dialog-grid">
+          <section class="reply-source-pane">
+            <div id="replySourceMeta" class="board-email-meta"></div>
+            <pre id="replySourceBody" class="reply-source-body"></pre>
+            <div class="reply-controls">
+              <label><span>Writing instructions</span><textarea id="replyInstructions" rows="4"></textarea></label>
+              <label><span>Model</span><select id="replyModel"></select></label>
+              <button id="generateReply" class="button primary" type="button">Generate reply</button>
+              <p id="replyStreamStatus" class="resample-status" aria-live="polite"></p>
+            </div>
+          </section>
+          <section class="reply-draft-pane">
+            <label><span>Subject</span><input id="replySubject" type="text" /></label>
+            <label class="reply-body-field"><span>Draft</span><textarea id="replyBody" placeholder="The response will stream here…"></textarea></label>
+            <div class="reply-draft-actions"><button id="copyReply" class="button secondary" type="button">Copy reply</button><button id="saveReply" class="button primary" type="button">Save reviewed draft</button></div>
+          </section>
+        </div>
+      </div>
     </dialog>
     <script src="/vendor/d3.min.js"></script>
     <script src="/vendor/d3-sankey.min.js"></script>

@@ -118,6 +118,21 @@ const applicationStatus = document.querySelector("#applicationStatus");
 const applicationBoard = document.querySelector("#applicationBoard");
 const applicationCount = document.querySelector("#applicationCount");
 const applicationDetail = document.querySelector("#applicationDetail");
+const aiView = document.querySelector("#aiView");
+const aiReviewQueue = document.querySelector("#aiReviewQueue");
+const aiReviewDetail = document.querySelector("#aiReviewDetail");
+const aiReviewCount = document.querySelector("#aiReviewCount");
+const aiLaneSummary = document.querySelector("#aiLaneSummary");
+const aiReviewModel = document.querySelector("#aiReviewModel");
+const replyDialog = document.querySelector("#replyDialog");
+const replyDialogTitle = document.querySelector("#replyDialogTitle");
+const replySourceMeta = document.querySelector("#replySourceMeta");
+const replySourceBody = document.querySelector("#replySourceBody");
+const replyInstructions = document.querySelector("#replyInstructions");
+const replyModel = document.querySelector("#replyModel");
+const replySubject = document.querySelector("#replySubject");
+const replyBody = document.querySelector("#replyBody");
+const replyStreamStatus = document.querySelector("#replyStreamStatus");
 const topActions = document.querySelector(".top-actions");
 const progressBlock = document.querySelector(".progress-block");
 
@@ -140,6 +155,11 @@ let currentLabMode = "quality";
 let currentBoardMode = "emails";
 let selectedPipelineStep = "ingestion";
 let latestCommandSnapshot = null;
+let boardReplyModels = [];
+let replyEmail = null;
+let aiCandidates = [];
+let aiCandidateTotal = 0;
+let currentAiEmailId = null;
 
 const categoryDescriptions = {
   applied: "Application received",
@@ -171,6 +191,7 @@ function switchView(view, mode = null) {
   const battlegroundActive = labActive && currentLabMode === "performance";
   const boardActive = applicationBoardActive && currentBoardMode === "emails";
   const analyticsActive = view === "analytics";
+  const aiActive = view === "ai";
   const applicationsActive = applicationBoardActive && currentBoardMode === "applications";
   app.classList.toggle("benchmark-mode", !reviewActive);
   app.classList.toggle("lab-mode", labActive);
@@ -183,6 +204,7 @@ function switchView(view, mode = null) {
   battlegroundView.hidden = !battlegroundActive;
   boardView.hidden = !boardActive;
   analyticsView.hidden = !analyticsActive;
+  aiView.hidden = !aiActive;
   applicationsView.hidden = !applicationsActive;
   labSwitch.hidden = !labActive;
   boardSwitch.hidden = !applicationBoardActive;
@@ -217,10 +239,11 @@ function switchView(view, mode = null) {
   if (boardActive) void loadBoard();
   if (analyticsActive) void loadAnalytics();
   if (applicationsActive) void loadApplications();
+  if (aiActive) void loadAiReviews();
 }
 
 function navigateToView(view) {
-  const safeView = ["command", "application_board", "lab", "analytics"].includes(view) ? view : "command";
+  const safeView = ["command", "application_board", "lab", "analytics", "ai"].includes(view) ? view : "command";
   if (safeView === "lab") {
     navigateToLab(currentLabMode);
     return;
@@ -266,7 +289,7 @@ function routeFromHash() {
     applications: "applications",
   };
   if (hash in boardRoutes) return { view: "application_board", boardMode: boardRoutes[hash] };
-  return { view: ["command", "analytics"].includes(hash) ? hash : "command" };
+  return { view: ["command", "analytics", "ai"].includes(hash) ? hash : "command" };
 }
 
 function applyRouteFromHash() {
@@ -522,14 +545,22 @@ function renderBoardList() {
     const cards = element("div", "board-lane-cards");
     if (!emails.length) cards.append(element("p", "board-lane-empty", "No emails"));
     for (const email of emails) {
-      const button = element("button", `board-item${email.email_id === boardCurrentEmailId ? " active" : ""}`);
+      const replyState = category === "reply_needed"
+        ? email.reply_draft_status === "reviewed" ? " reply-reviewed" : email.reply_draft_status ? " reply-drafted" : " reply-waiting"
+        : "";
+      const button = element("button", `board-item${email.email_id === boardCurrentEmailId ? " active" : ""}${replyState}`);
       button.type = "button";
       button.append(
         element("strong", "", email.subject || "(no subject)"),
         element("small", "", [email.from_name, email.from_email].filter(Boolean).join(" · ") || "Unknown sender"),
         element("small", "board-card-meta", `${email.human_category ? "Human corrected" : "Jev"} · ${displayPercent(email.category_top_probability)}`),
       );
-      button.addEventListener("click", () => void loadBoardEmail(email.email_id));
+      if (category === "reply_needed") {
+        button.append(element("span", "reply-state-label", email.reply_draft_status === "reviewed" ? "Reply ready" : email.reply_draft_status ? "Draft generated" : "No draft yet"));
+        button.addEventListener("click", () => void openReplyWorkspace(email.email_id));
+      } else {
+        button.addEventListener("click", () => void loadBoardEmail(email.email_id));
+      }
       cards.append(button);
     }
     lane.append(laneHeading, cards);
@@ -679,6 +710,111 @@ function renderBoardDetail(email) {
   }
 }
 
+function populateModelSelect(select, models, selected) {
+  select.replaceChildren();
+  for (const model of models) {
+    const option = document.createElement("option");
+    option.value = model;
+    option.textContent = model;
+    option.selected = model === selected;
+    select.append(option);
+  }
+}
+
+async function openReplyWorkspace(emailId) {
+  replyStreamStatus.classList.remove("error");
+  replyStreamStatus.textContent = "Loading saved context…";
+  replyDialog.showModal();
+  try {
+    const response = await fetch(`/api/board/email?id=${encodeURIComponent(emailId)}`, { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not load email");
+    replyEmail = payload.email;
+    replyDialogTitle.textContent = replyEmail.subject || "(no subject)";
+    replySourceMeta.textContent = `${[replyEmail.from_name, replyEmail.from_email].filter(Boolean).join(" · ") || "Unknown sender"} · ${new Date(replyEmail.internal_date).toLocaleString()}`;
+    replySourceBody.textContent = replyEmail.body_text || replyEmail.snippet || "No readable body.";
+    replyInstructions.value = replyEmail.reply_draft_instructions || boardReplyProfile;
+    replySubject.value = replyEmail.reply_draft_subject || "";
+    replyBody.value = replyEmail.reply_draft_body || "";
+    populateModelSelect(replyModel, boardReplyModels.length ? boardReplyModels : ["gpt-4o-mini"], replyEmail.reply_draft_model);
+    replyStreamStatus.textContent = replyEmail.reply_draft_status === "reviewed"
+      ? "Reviewed draft restored. Nothing has been sent."
+      : replyEmail.reply_draft_body ? "Saved draft restored." : "Ready to generate a new draft.";
+  } catch (error) {
+    replyStreamStatus.classList.add("error");
+    replyStreamStatus.textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function generateStreamingReply() {
+  if (!replyEmail) return;
+  const button = document.querySelector("#generateReply");
+  button.disabled = true;
+  replyBody.value = "";
+  replySubject.value = /^re:/i.test(replyEmail.subject || "") ? replyEmail.subject : `Re: ${replyEmail.subject || "Your email"}`;
+  replyStreamStatus.classList.remove("error");
+  replyStreamStatus.textContent = "GPT-4o Mini is drafting…";
+  try {
+    const response = await fetch("/api/board/draft/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email_id: replyEmail.id, instructions: replyInstructions.value, model: replyModel.value }),
+    });
+    if (!response.ok || !response.body) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || "Could not generate reply");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === "delta") replyBody.value += event.delta;
+        if (event.type === "done") {
+          replySubject.value = event.draft.subject;
+          replyStreamStatus.textContent = `Draft saved with ${event.draft.model}. Review it before copying.`;
+        }
+        if (event.type === "error") throw new Error(event.error);
+      }
+      if (done) break;
+    }
+    await loadBoard(false);
+  } catch (error) {
+    replyStreamStatus.classList.add("error");
+    replyStreamStatus.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function saveReplyDraft() {
+  if (!replyEmail) return;
+  const button = document.querySelector("#saveReply");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/board/draft/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email_id: replyEmail.id, subject: replySubject.value, body: replyBody.value }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not save draft");
+    replyStreamStatus.textContent = "Reviewed draft saved. Nothing was sent.";
+    await loadBoard(false);
+  } catch (error) {
+    replyStreamStatus.classList.add("error");
+    replyStreamStatus.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function loadBoardEmail(emailId) {
   boardCurrentEmailId = emailId;
   renderBoardList();
@@ -708,6 +844,7 @@ async function loadBoard(selectFirst = false) {
     boardEmails = rows;
     boardReplyProfile = payload?.reply_profile || "";
     boardReplyReady = Boolean(payload?.reply_provider_ready);
+    boardReplyModels = payload?.reply_models || [];
     if (!boardEmails.some((email) => email.email_id === boardCurrentEmailId)) {
       boardCurrentEmailId = null;
       boardDetail.replaceChildren(element("p", "board-empty", "Choose a card to inspect the email and correct its decision."));
@@ -1202,29 +1339,55 @@ async function loadAnalytics() {
   }
 }
 
-const applicationStatuses = ["outreach", "applied", "reply_needed", "interview_assessment", "offer", "rejected", "ghosted"];
+const applicationStatuses = ["reply_needed", "interview_assessment", "offer", "applied", "outreach", "rejected", "ghosted"];
 
 function applicationCard(application) {
-  const card = element("button", "application-card");
-  card.type = "button";
+  const card = element("article", "application-card");
   card.classList.toggle("active", application.id === currentApplicationId);
+  const open = element("button", "application-card-main");
+  open.type = "button";
   const company = element("strong", "", application.company || "Unknown company");
   const role = element("span", "application-role", application.role || application.latest_subject || "Role not extracted");
   const meta = element("small", "", `${application.message_count} email${application.message_count === 1 ? "" : "s"} · ${new Date(application.last_activity_at).toLocaleDateString()}`);
   if (application.actionable_count) meta.textContent += ` · ${application.actionable_count} action${application.actionable_count === 1 ? "" : "s"}`;
-  card.append(company, role, meta);
-  card.addEventListener("click", () => void loadApplicationDetail(application.id));
+  open.append(company, role, meta);
+  open.addEventListener("click", () => void loadApplicationDetail(application.id));
+  const star = element("button", `application-star${application.is_starred ? " active" : ""}`, application.is_starred ? "★" : "☆");
+  star.type = "button";
+  star.title = application.is_starred ? "Remove from Starred" : "Add to Starred";
+  star.setAttribute("aria-label", star.title);
+  star.addEventListener("click", async () => {
+    star.disabled = true;
+    try {
+      const response = await fetch("/api/applications/star", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ application_id: application.id, starred: !application.is_starred }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Could not save star");
+      application.is_starred = payload.application.is_starred;
+      application.starred_at = payload.application.starred_at;
+      renderApplicationBoard();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error));
+      star.disabled = false;
+    }
+  });
+  card.append(open, star);
   return card;
 }
 
 function renderApplicationBoard() {
   applicationBoard.replaceChildren();
   applicationCount.textContent = `${applications.length.toLocaleString()} application${applications.length === 1 ? "" : "s"}`;
-  for (const status of applicationStatuses) {
+  for (const status of ["starred", ...applicationStatuses]) {
     const lane = element("section", `application-lane status-${status}`);
-    const laneApplications = applications.filter((application) => application.current_status === status);
+    const laneApplications = status === "starred"
+      ? applications.filter((application) => application.is_starred)
+      : applications.filter((application) => application.current_status === status);
     const heading = element("header", "application-lane-heading");
-    heading.append(element("strong", "", displayCategory(status)), element("span", "", laneApplications.length.toLocaleString()));
+    heading.append(element("strong", "", status === "starred" ? "★ Starred" : displayCategory(status)), element("span", "", laneApplications.length.toLocaleString()));
     const cards = element("div", "application-lane-cards");
     if (!laneApplications.length) cards.append(element("p", "board-lane-empty", "No applications"));
     else for (const application of laneApplications) cards.append(applicationCard(application));
@@ -1393,6 +1556,128 @@ async function loadApplications() {
     renderApplicationBoard();
   } catch (error) {
     applicationBoard.replaceChildren(element("p", "board-empty error", error instanceof Error ? error.message : String(error)));
+  }
+}
+
+function renderAiReviewDetail(candidate) {
+  currentAiEmailId = candidate.email_id;
+  aiReviewDetail.replaceChildren();
+  const heading = element("div", "ai-review-heading");
+  heading.append(
+    element("span", `badge category-${candidate.effective_category}`, displayCategory(candidate.effective_category)),
+    element("h3", "", candidate.subject || "(no subject)"),
+    element("p", "", `${candidate.from_name || candidate.from_email || "Unknown sender"} · Jev ${displayPercent(candidate.category_top_probability)}`),
+  );
+  const run = element("button", "button primary", candidate.llm_reviewed_at ? "Run review again" : "Run structured AI review");
+  run.type = "button";
+  const status = element("p", "resample-status", candidate.llm_reviewed_at ? `Reviewed with ${candidate.llm_review_model}.` : "Not reviewed yet.");
+  const input = element("pre", "ai-json", JSON.stringify(candidate.llm_review_input || {
+    jev: { category: candidate.jev_decision, confidence: candidate.category_top_probability, next_action: candidate.next_action },
+    email: { id: candidate.email_id, subject: candidate.subject, snippet: candidate.snippet },
+  }, null, 2));
+  const output = element("pre", "ai-json output", JSON.stringify(candidate.llm_review_output || { status: "Run the review to produce schema-validated output." }, null, 2));
+  const contract = element("div", "ai-contract-grid");
+  const inputPanel = element("section", "");
+  inputPanel.append(element("h4", "", "Structured input"), input);
+  const outputPanel = element("section", "");
+  outputPanel.append(element("h4", "", "Structured output"), output);
+  contract.append(inputPanel, outputPanel);
+  run.addEventListener("click", async () => {
+    run.disabled = true;
+    status.classList.remove("error");
+    status.textContent = "Reviewing category and application relationship…";
+    try {
+      const response = await fetch("/api/ai/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email_id: candidate.email_id, model: aiReviewModel.value }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "AI review failed");
+      candidate.llm_review_input = payload.input;
+      candidate.llm_review_output = payload.decision;
+      candidate.llm_review_category = payload.decision.category;
+      candidate.llm_review_confidence = payload.decision.confidence;
+      candidate.llm_review_model = payload.model;
+      candidate.llm_reviewed_at = payload.reviewed_at;
+      renderAiReviewQueue();
+      renderAiReviewDetail(candidate);
+    } catch (error) {
+      status.classList.add("error");
+      status.textContent = error instanceof Error ? error.message : String(error);
+      run.disabled = false;
+    }
+  });
+  aiReviewDetail.append(heading, run, status, contract);
+  const relationship = candidate.llm_review_output;
+  if (relationship?.related_application_id && Number(relationship.relationship_confidence || 0) >= 0.85) {
+    const join = element("button", "button secondary", "Confirm and join this email");
+    join.type = "button";
+    join.addEventListener("click", async () => {
+      join.disabled = true;
+      try {
+        const response = await fetch("/api/ai/relationship/apply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email_id: candidate.email_id, application_id: relationship.related_application_id }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Could not join email");
+        status.textContent = "Email joined to the confirmed application.";
+      } catch (error) {
+        status.classList.add("error");
+        status.textContent = error instanceof Error ? error.message : String(error);
+        join.disabled = false;
+      }
+    });
+    aiReviewDetail.append(join);
+  }
+}
+
+function renderAiReviewQueue() {
+  aiReviewQueue.replaceChildren();
+  aiReviewCount.textContent = `${aiCandidates.length.toLocaleString()} of ${aiCandidateTotal.toLocaleString()} candidates`;
+  aiLaneSummary.replaceChildren();
+  for (const category of ["reply_needed", "interview_assessment", "offer"]) {
+    const rows = aiCandidates.filter((candidate) => candidate.effective_category === category);
+    const reviewed = rows.filter((candidate) => candidate.llm_reviewed_at).length;
+    const summary = element("article", `ai-lane-card category-${category}`);
+    summary.append(element("span", "", displayCategory(category)), element("strong", "", rows.length.toLocaleString()), element("small", "", `${reviewed} AI reviewed`));
+    aiLaneSummary.append(summary);
+  }
+  for (const candidate of aiCandidates) {
+    const button = element("button", `ai-review-row${candidate.email_id === currentAiEmailId ? " active" : ""}`);
+    button.type = "button";
+    button.append(
+      element("span", `ai-review-dot${candidate.llm_reviewed_at ? " reviewed" : ""}`),
+      element("strong", "", candidate.subject || "(no subject)"),
+      element("small", "", `${displayCategory(candidate.effective_category)} · Jev ${displayPercent(candidate.category_top_probability)}`),
+      element("em", "", candidate.llm_reviewed_at ? `${displayCategory(candidate.llm_review_category)} · ${displayPercent(Number(candidate.llm_review_confidence))}` : "Awaiting AI"),
+    );
+    button.addEventListener("click", () => {
+      renderAiReviewQueue();
+      renderAiReviewDetail(candidate);
+    });
+    aiReviewQueue.append(button);
+  }
+}
+
+async function loadAiReviews() {
+  aiReviewQueue.replaceChildren(element("p", "board-empty", "Loading targeted decisions…"));
+  try {
+    const response = await fetch("/api/ai/reviews?limit=500", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not load AI reviews");
+    aiCandidates = payload.candidates || [];
+    aiCandidateTotal = Number(payload.total || aiCandidates.length);
+    populateModelSelect(aiReviewModel, payload.models || ["gpt-4o-mini"], aiReviewModel.value);
+    renderAiReviewQueue();
+    if (currentAiEmailId) {
+      const current = aiCandidates.find((candidate) => candidate.email_id === currentAiEmailId);
+      if (current) renderAiReviewDetail(current);
+    }
+  } catch (error) {
+    aiReviewQueue.replaceChildren(element("p", "board-empty error", error instanceof Error ? error.message : String(error)));
   }
 }
 
@@ -2276,6 +2561,14 @@ async function initialize() {
     applicationStatus.addEventListener("change", () => {
       currentApplicationId = null;
       void loadApplications();
+    });
+    document.querySelector("#refreshAi").addEventListener("click", () => void loadAiReviews());
+    document.querySelector("#closeReplyDialog").addEventListener("click", () => replyDialog.close());
+    document.querySelector("#generateReply").addEventListener("click", () => void generateStreamingReply());
+    document.querySelector("#saveReply").addEventListener("click", () => void saveReplyDraft());
+    document.querySelector("#copyReply").addEventListener("click", async () => {
+      await navigator.clipboard.writeText([replySubject.value, "", replyBody.value].join("\n"));
+      replyStreamStatus.textContent = "Subject and reply copied.";
     });
     document.querySelector("#openResample").addEventListener("click", () => {
       resampleStatus.textContent = "";

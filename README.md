@@ -8,7 +8,7 @@ This repository is intentionally being built one phase at a time. The current so
 
 ## Current status
 
-**Gmail ingestion, the 200-email human dataset, Jev evaluation, resumable production classification, application grouping, Kanban boards, analytics, corrections, reviewed reply drafts, hourly automation, and operational health reporting are complete.**
+**Gmail ingestion, the 200-email human dataset, Jev evaluation, resumable production classification, application grouping, Kanban boards, analytics, corrections, targeted AI review, streamed reply drafts, starring, hourly automation, and operational health reporting are complete.**
 
 - Why Supabase Postgres
 
@@ -103,7 +103,7 @@ The existing 200 human labels define email-category ground truth only. Therefore
 
 The email/classification core deliberately contains only five tables: `gmail_accounts`, `emails`, `sync_runs`, `classification_runs`, and `email_classifications`. The `email_board` view combines each email with its latest completed production classification and current human correction. Phase 10 adds only the three relational tables required for application-level tracking: `applications`, `application_messages`, and `application_status_events`. Browser roles have no direct access; server code uses the Supabase service role.
 
-Apply migrations `001` through `007` in filename order. Import or refresh the private labels with:
+Apply migrations `001` through `008` in filename order. Import or refresh the private labels with:
 
 ```bash
 npm run phase5:bootstrap
@@ -156,10 +156,25 @@ Reply drafting is optional. Configure these server-only values in `.env`:
 ```env
 OPENAI_API_KEY=replace_me
 OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODELS=gpt-4o-mini
 REPLY_WRITING_PROFILE=Write as Tirth Shah in a concise, warm, professional tone. Never invent facts.
 ```
 
 Restart the dashboard, select an email in the **Reply Needed** lane, adjust the personal instructions if needed, and click **Generate draft**. The app sends that email's context only at that moment, asks GPT-4o Mini for a structured subject/body, and saves the suggestion. Edit it and click **Save reviewed draft** to retain the human-approved version. Neither action sends email. Reply controls are not rendered for other categories, and the server rejects ineligible draft requests.
+
+## Targeted AI review
+
+Apply `supabase/migrations/008_ai_assistance.sql`, restart the dashboard, and open **AI**. Jev remains the primary classifier; the LLM is a structured second opinion for Reply Needed, Interview / Assessment, and Offer. The page shows the exact JSON input and schema-constrained output. It stores the review alongside the email without overwriting Jev or a human correction.
+
+Relationship suggestions are advisory. The model must identify the same company and role or requisition, and the UI requires explicit confirmation before an email is joined to another application. Shared job-board or Gmail threads alone are not enough.
+
+To measure this reviewer on a bounded human-labeled subset:
+
+```bash
+npm run ai:evaluate -- --limit=20
+```
+
+This consumes OpenAI API usage and writes the private report to `data/labeling/generated/llm-review-evaluation.json`. The separate **AI Chat** area is currently a disabled product shell; read-only mailbox querying and evidence citations are planned rather than simulated.
 
 ## Hourly automation and health
 
