@@ -261,6 +261,23 @@ async function updateCachedApplicationStar(applicationId: string, starred: boole
   await analyticsSnapshotCache.set(applicationBoardCacheKey, snapshot, 86_400);
 }
 
+async function updateCachedInterviewProgress(
+  applicationId: string,
+  progress: string | null,
+  updatedAt: string | null,
+): Promise<void> {
+  const snapshot = await cachedApplicationBoardSnapshot();
+  const visited = new Set<Record<string, unknown>>();
+  for (const application of [...Object.values(snapshot.by_status).flat(), ...snapshot.starred]) {
+    if (visited.has(application) || application.id !== applicationId) continue;
+    visited.add(application);
+    application.interview_progress = progress;
+    application.interview_progress_updated_at = updatedAt;
+  }
+  snapshot.generated_at = new Date().toISOString();
+  await analyticsSnapshotCache.set(applicationBoardCacheKey, snapshot, 86_400);
+}
+
 function json(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, {
     "Cache-Control": "no-store",
@@ -1785,6 +1802,28 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       String(saved.id || applicationId),
       Boolean(saved.is_starred),
       typeof saved.starred_at === "string" ? saved.starred_at : null,
+    );
+    json(response, 200, { application: saved });
+    return;
+  }
+  if (request.method === "POST" && path === "/api/applications/interview-progress") {
+    const input = await body(request);
+    const applicationId = typeof input.application_id === "string" ? input.application_id : "";
+    const progress = input.progress === null || input.progress === "" ? null : input.progress;
+    if (!applicationId || (progress !== null && progress !== "pending" && progress !== "completed")) {
+      json(response, 400, { error: "application_id and progress (pending, completed, or null) are required" });
+      return;
+    }
+    const { data, error } = await database.rpc("set_application_interview_progress", {
+      p_application_id: applicationId,
+      p_progress: progress,
+    });
+    if (error) throw new Error(`Could not save interview progress. Apply migration 020. ${error.message}`);
+    const saved = (data || {}) as Record<string, unknown>;
+    await updateCachedInterviewProgress(
+      String(saved.id || applicationId),
+      typeof saved.interview_progress === "string" ? saved.interview_progress : null,
+      typeof saved.interview_progress_updated_at === "string" ? saved.interview_progress_updated_at : null,
     );
     json(response, 200, { application: saved });
     return;

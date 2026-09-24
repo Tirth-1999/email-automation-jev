@@ -517,6 +517,8 @@ Fresh replacement requires confirmation. It also removes manual application link
 | `016_durable_application_stars.sql` | Email-anchored star continuity and atomic star RPC |
 | `017_full_reset_application_overrides.sql` | Application-level manual override cleanup during full reset |
 | `018_last_successful_automation.sql` | Preserved last-success timestamp for dynamic scheduler health |
+| `019_refresh_application_board_view.sql` | Refreshed application board fields for stars and AI SQL |
+| `020_interview_progress.sql` | Interview Assessment completion markers and board styling state |
 
 ## Caching
 

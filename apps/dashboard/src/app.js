@@ -1994,7 +1994,7 @@ async function loadAnalytics() {
 
 const applicationStatuses = ["reply_needed", "information_needed", "interview_assessment", "offer", "applied", "outreach", "rejected", "ghosted"];
 
-function applicationCard(application) {
+function applicationCard(application, laneStatus) {
   const card = element("article", "application-card");
   card.classList.toggle("active", application.id === currentApplicationId);
   const open = element("button", "application-card-main");
@@ -2047,6 +2047,51 @@ function applicationCard(application) {
     }
   });
   card.append(open, star);
+  if (laneStatus === "interview_assessment") {
+    const savedProgress = ["pending", "completed"].includes(application.interview_progress)
+      ? application.interview_progress
+      : "";
+    card.classList.add(`interview-progress-${savedProgress || "unmarked"}`);
+    const progressControl = element("label", "application-interview-progress");
+    const dot = element("span", "interview-progress-dot");
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", `Interview progress for ${application.company || "this application"}`);
+    for (const [value, label] of [["", "Not marked"], ["pending", "Not completed"], ["completed", "Interview completed"]]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      option.selected = value === savedProgress;
+      select.append(option);
+    }
+    select.addEventListener("change", async () => {
+      const nextProgress = select.value || null;
+      select.disabled = true;
+      try {
+        const response = await apiFetch("/api/applications/interview-progress", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ application_id: application.id, progress: nextProgress }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Could not save interview progress");
+        for (const laneState of Object.values(applicationLaneState)) {
+          for (const item of laneState.items || []) {
+            if (item.id !== application.id) continue;
+            item.interview_progress = payload.application.interview_progress;
+            item.interview_progress_updated_at = payload.application.interview_progress_updated_at;
+          }
+        }
+        syncApplications();
+        renderApplicationBoard();
+      } catch (error) {
+        select.value = savedProgress;
+        select.disabled = false;
+        window.alert(error instanceof Error ? error.message : String(error));
+      }
+    });
+    progressControl.append(dot, select);
+    card.append(progressControl);
+  }
   return card;
 }
 
@@ -2067,7 +2112,7 @@ function renderApplicationBoard() {
     if (state.error) cards.append(element("p", "board-lane-empty error", state.error));
     else if (state.loading && !laneApplications.length) cards.append(element("p", "board-lane-empty", "Loading recent applications…"));
     else if (!laneApplications.length) cards.append(element("p", "board-lane-empty", status === "starred" ? "Star important applications to collect them here." : "No applications in this lane."));
-    else for (const application of laneApplications) cards.append(applicationCard(application));
+    else for (const application of laneApplications) cards.append(applicationCard(application, status));
     if (state.hasMore) {
       const more = element("button", "lane-load-more", state.loading ? "Loading…" : `Load ${Math.min(applicationPageSize, state.total - laneApplications.length)} more`);
       more.type = "button";
