@@ -1708,7 +1708,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
   if (request.method === "GET" && path === "/api/applications") {
-    const limit = Math.max(1, Math.min(1_000, Number(requestUrl.searchParams.get("limit") || "500")));
+    const limit = Math.max(1, Math.min(5_000, Number(requestUrl.searchParams.get("limit") || "500")));
     const offset = Math.max(0, Number(requestUrl.searchParams.get("offset") || "0"));
     const status = requestUrl.searchParams.get("status");
     const starredOnly = requestUrl.searchParams.get("starred") === "true";

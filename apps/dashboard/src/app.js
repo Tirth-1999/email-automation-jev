@@ -203,6 +203,21 @@ let boardReplyReady = false;
 let applications = [];
 let applicationLaneState = {};
 let currentApplicationId = null;
+const applicationBoardViewStateKey = "application-board:view-state:v1";
+let applicationBoardViewState = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(applicationBoardViewStateKey) || "{}");
+    return {
+      loadedCounts: saved.loadedCounts && typeof saved.loadedCounts === "object" ? saved.loadedCounts : {},
+      laneScrollTop: saved.laneScrollTop && typeof saved.laneScrollTop === "object" ? saved.laneScrollTop : {},
+      boardScrollLeft: Number(saved.boardScrollLeft || 0),
+      viewScrollTop: Number(saved.viewScrollTop || 0),
+      statusFilter: typeof saved.statusFilter === "string" ? saved.statusFilter : "all",
+    };
+  } catch {
+    return { loadedCounts: {}, laneScrollTop: {}, boardScrollLeft: 0, viewScrollTop: 0, statusFilter: "all" };
+  }
+})();
 let currentLabMode = "quality";
 let currentBoardMode = "emails";
 let currentAiMode = "brain";
@@ -311,6 +326,10 @@ function displayCategory(category) {
 
 function displayPercent(value) {
   return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "—";
+}
+
+function saveApplicationBoardViewState() {
+  localStorage.setItem(applicationBoardViewStateKey, JSON.stringify(applicationBoardViewState));
 }
 
 function gmailDeepLink(email) {
@@ -2096,6 +2115,15 @@ function applicationCard(application, laneStatus) {
 }
 
 function renderApplicationBoard() {
+  const renderedLanes = [...applicationBoard.querySelectorAll("[data-application-lane]")];
+  const hasRenderedCards = renderedLanes.some((lane) => lane.querySelector(".application-card"));
+  const boardScrollLeft = renderedLanes.length ? applicationBoard.scrollLeft : applicationBoardViewState.boardScrollLeft;
+  const viewScrollTop = hasRenderedCards ? applicationsView.scrollTop : applicationBoardViewState.viewScrollTop;
+  const laneScrollPositions = new Map(Object.entries(applicationBoardViewState.laneScrollTop));
+  for (const lane of renderedLanes) {
+    const cards = lane.querySelector(".application-lane-cards");
+    if (cards?.querySelector(".application-card")) laneScrollPositions.set(lane.dataset.applicationLane, cards.scrollTop);
+  }
   applicationBoard.replaceChildren();
   const statuses = applicationStatus.value === "all" ? ["starred", ...applicationStatuses] : [applicationStatus.value];
   const total = applicationStatus.value === "all"
@@ -2105,6 +2133,7 @@ function renderApplicationBoard() {
   for (const status of statuses) {
     const state = applicationLaneState[status] || { items: [], total: 0, hasMore: false, loading: true, error: null };
     const lane = element("section", `application-lane status-${status}`);
+    lane.dataset.applicationLane = status;
     const laneApplications = state.items;
     const heading = element("header", "application-lane-heading");
     heading.append(element("strong", "", status === "starred" ? "★ Starred" : displayCategory(status)), element("span", "", state.loading && !laneApplications.length ? "…" : Number(state.total || 0).toLocaleString()));
@@ -2114,7 +2143,7 @@ function renderApplicationBoard() {
     else if (!laneApplications.length) cards.append(element("p", "board-lane-empty", status === "starred" ? "Star important applications to collect them here." : "No applications in this lane."));
     else for (const application of laneApplications) cards.append(applicationCard(application, status));
     if (state.hasMore) {
-      const more = element("button", "lane-load-more", state.loading ? "Loading…" : `Load ${Math.min(applicationPageSize, state.total - laneApplications.length)} more`);
+      const more = element("button", "lane-load-more", state.loading ? "Loading…" : "Load 30 more");
       more.type = "button";
       more.disabled = state.loading;
       more.addEventListener("click", () => void loadApplicationLane(status, true));
@@ -2122,7 +2151,14 @@ function renderApplicationBoard() {
     }
     lane.append(heading, cards);
     applicationBoard.append(lane);
+    cards.scrollTop = Number(laneScrollPositions.get(status) || 0);
+    cards.addEventListener("scroll", () => {
+      applicationBoardViewState.laneScrollTop[status] = cards.scrollTop;
+      saveApplicationBoardViewState();
+    }, { passive: true });
   }
+  applicationBoard.scrollLeft = boardScrollLeft;
+  applicationsView.scrollTop = viewScrollTop;
 }
 
 function timelineItem(event) {
@@ -2282,15 +2318,19 @@ async function loadApplicationLane(status, append = false, renderImmediately = t
   if (renderImmediately) renderApplicationBoard();
   try {
     const offset = append ? state.items.length : 0;
+    const rememberedCount = Number(applicationBoardViewState.loadedCounts[status] || applicationPageSize);
+    const limit = append ? applicationPageSize : Math.max(applicationPageSize, Math.min(5_000, rememberedCount));
     const params = status === "starred"
       ? `starred=true`
       : `status=${encodeURIComponent(status)}`;
-    const response = await apiFetch(`/api/applications?limit=${applicationPageSize}&offset=${offset}&${params}`, { cache: "no-store" });
+    const response = await apiFetch(`/api/applications?limit=${limit}&offset=${offset}&${params}`, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || `Could not load ${displayCategory(status)} applications`);
     state.items = append ? [...state.items, ...(payload.applications || [])] : (payload.applications || []);
     state.total = Number(payload.total || 0);
     state.hasMore = Boolean(payload.has_more);
+    applicationBoardViewState.loadedCounts[status] = state.items.length;
+    saveApplicationBoardViewState();
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error);
   } finally {
@@ -3666,11 +3706,24 @@ async function initialize() {
       void loadAnalytics();
     });
     analyticsRange.addEventListener("change", () => void loadAnalytics());
+    if (["all", ...applicationStatuses].includes(applicationBoardViewState.statusFilter)) {
+      applicationStatus.value = applicationBoardViewState.statusFilter;
+    }
     document.querySelector("#refreshApplications").addEventListener("click", () => void loadApplications());
     applicationStatus.addEventListener("change", () => {
       currentApplicationId = null;
+      applicationBoardViewState.statusFilter = applicationStatus.value;
+      saveApplicationBoardViewState();
       void loadApplications();
     });
+    applicationBoard.addEventListener("scroll", () => {
+      applicationBoardViewState.boardScrollLeft = applicationBoard.scrollLeft;
+      saveApplicationBoardViewState();
+    }, { passive: true });
+    applicationsView.addEventListener("scroll", () => {
+      applicationBoardViewState.viewScrollTop = applicationsView.scrollTop;
+      saveApplicationBoardViewState();
+    }, { passive: true });
     document.querySelector("#refreshAi").addEventListener("click", () => void loadAiReviews());
     aiLaneSelect.addEventListener("change", () => {
       currentAiEmailId = null;
