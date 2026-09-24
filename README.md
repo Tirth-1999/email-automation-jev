@@ -2,6 +2,8 @@
 
 A Gmail-to-job-tracker workspace built around [TypeSafe Jev](https://typesafe.ai/). It ingests incoming and sent Gmail messages, classifies job-search events with typed probabilities, groups related messages into applications, and presents the result through an operational dashboard.
 
+[![Repository views](https://hits.sh/github.com/Tirth-1999/email-automation-jev.svg?style=flat-square&label=repository%20views&color=315efb)](https://hits.sh/github.com/Tirth-1999/email-automation-jev/)
+
 The project separates three kinds of intelligence:
 
 - deterministic code owns Gmail synchronization, database writes, grouping rules, safety, and workflow execution;
@@ -24,22 +26,6 @@ The complete local workflow is operational:
 - optional Redis snapshots and hourly orchestration.
 
 The active classifier is `job-email-jev-v6`. Candidate/application/interview feedback surveys are `other`; required EEO, WOTC, eligibility, profile, or missing-detail forms are `information_needed`.
-
-## Project tracker
-
-**Local MVP: 15 of 15 implementation milestones complete**
-
-| Workstream | Status | Delivered |
-| --- | --- | --- |
-| Foundation | ✅ Complete | Architecture, Gmail OAuth, ingestion, human labels, and held-out evaluation |
-| Jev pipeline | ✅ Complete | Choice, Score, and Noul judgments, resumable classification, full-mailbox runs, and performance testing |
-| Product experience | ✅ Complete | Command Center, email and application boards, corrections, stars, analytics, and Sankey visualization |
-| Application intelligence | ✅ Complete | Relationship-aware grouping, lifecycle rules, company/title resolution, AI Brain, and reply drafts |
-| Operations | ✅ Complete | Supabase persistence, RLS, Redis snapshots, scheduling, pipeline locks, health metrics, and cancellation |
-| AI Chat | ✅ Complete | Jev-routed conversational handling and account-scoped read-only NL-to-SQL |
-| Hosted release | ⏭ Next | Production deployment, managed scheduling, environment setup, and release monitoring |
-
-Detailed implementation notes and commands remain in the phase-by-phase sections below.
 
 ## System overview
 
