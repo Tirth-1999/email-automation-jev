@@ -67,8 +67,17 @@ test("Command Center exposes guarded incremental, full-history, and fresh-replac
   assert.match(html, /cancelCommandOutputs/);
   assert.match(browser, /replace_existing/);
   assert.match(browser, /cancelCommandJob/);
+  assert.match(browser, /handleCommandClassificationAction/);
+  assert.match(browser, /Resume.*remaining/);
+  assert.match(browser, /Retry Gmail sync/);
+  assert.match(browser, /classificationInterrupted/);
+  assert.match(browser, /ingestionInterrupted/);
+  assert.match(browser, /status\?fresh=1/);
   assert.match(browser, /window\.confirm/);
   assert.match(server, /resetExisting: scopeValue === "all"/);
   assert.match(server, /\/api\/command\/cancel-active/);
+  assert.match(server, /createRecoveryClassificationRun/);
+  assert.match(server, /source_run_id: sourceRunId/);
+  assert.match(server, /searchParams\.get\("fresh"\) === "1"/);
   assert.match(server, /cancelManualPipeline/);
 });

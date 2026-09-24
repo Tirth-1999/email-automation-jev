@@ -694,9 +694,11 @@ async function askAiChat(questionValue) {
     const routeName = payload.route?.route || "conversation";
     aiChatRouteState.textContent = routeName === "sql" ? "SQL evidence" : routeName === "conversation" ? "No tool used" : "Outside scope";
     aiChatRouteState.className = `chat-route-state ${routeName}`;
-    aiChatStatus.textContent = payload.tool_used
-      ? `${payload.row_count} SQL result row${payload.row_count === 1 ? "" : "s"} used · ${payload.model}`
-      : `Answered without querying Supabase · ${payload.model}`;
+    aiChatStatus.textContent = payload.tool_error
+      ? `The SQL lookup could not complete after one repair attempt · ${payload.model}`
+      : payload.tool_used
+        ? `${payload.row_count} SQL result row${payload.row_count === 1 ? "" : "s"} used · ${payload.model}`
+        : `Answered without querying Supabase · ${payload.model}`;
   } catch (error) {
     loading.remove();
     appendAiChatMessage("assistant error", error instanceof Error ? error.message : String(error));
@@ -2833,7 +2835,7 @@ function renderPipelineDetail(snapshot) {
 function setPipelineStepState(step, badge, status) {
   step.classList.toggle("is-running", status === "queued" || status === "running");
   step.classList.toggle("is-complete", status === "succeeded");
-  step.classList.toggle("is-error", status === "failed" || status === "partial");
+  step.classList.toggle("is-error", status === "failed" || status === "partial" || status === "interrupted");
   step.classList.toggle("is-cancelled", status === "cancelled");
   badge.className = `pipeline-state ${status || "waiting"}`;
   badge.textContent = status ? displayCategory(status) : "Waiting";
@@ -2847,6 +2849,7 @@ function renderCommandPipeline(snapshot) {
   const ingestion = snapshot.ingestion;
   const outputs = snapshot.outputs;
   const pipeline = snapshot.pipeline;
+  const runtime = snapshot.runtime || {};
   if (outputs?.status === "succeeded" && outputs.finished_at && outputs.finished_at !== lastOutputCacheVersion) {
     lastOutputCacheVersion = outputs.finished_at;
     invalidateApiCache();
@@ -2854,14 +2857,36 @@ function renderCommandPipeline(snapshot) {
   const latestSync = (snapshot.sync_runs || [])[0];
   const runs = snapshot.runs || [];
   const activeRun = runs.find((run) => run.status === "queued" || run.status === "running");
-  // Prefer the newest successful production result over a later cancelled retry.
-  // The cancelled run remains visible in run history, but it must not replace the
-  // corpus currently published to the board and analytics workspaces.
-  const latestRun = runs.find((run) => run.status === "succeeded") || runs[0];
+  const latestRun = runs[0];
   const ingestionStatus = ingestion?.status || latestSync?.status || null;
-  const ingestionRunning = ingestionStatus === "queued" || ingestionStatus === "running";
-  const classificationRunning = Boolean(activeRun);
   const manualPipelineRunning = pipeline?.status === "queued" || pipeline?.status === "running";
+  const pipelineIngestionRunning = manualPipelineRunning && pipeline?.stage === "ingestion";
+  const pipelineClassificationRunning = manualPipelineRunning && pipeline?.stage === "classification";
+  const automationLockLive = automation.pipeline_lock_expires_at
+    ? Date.parse(automation.pipeline_lock_expires_at) > Date.now()
+    : Boolean(automation.pipeline_lock_id);
+  const automationRunning = automation.last_automation_status === "running" && automationLockLive;
+  const ingestionInterrupted = Boolean(
+    !ingestion
+    && (latestSync?.status === "queued" || latestSync?.status === "running")
+    && !pipelineIngestionRunning
+    && !automationRunning,
+  );
+  const ingestionRunning = (ingestionStatus === "queued" || ingestionStatus === "running") && !ingestionInterrupted;
+  const runtimeRunIds = Array.isArray(runtime.classification_run_ids) ? runtime.classification_run_ids : [];
+  const classificationInterrupted = Boolean(
+    activeRun
+    && !runtimeRunIds.includes(activeRun.id)
+    && !pipelineClassificationRunning
+    && !automationRunning,
+  );
+  const classificationRunning = Boolean(activeRun) && !classificationInterrupted;
+  const terminalRecoveryRun = latestRun
+    && ["partial", "failed", "cancelled"].includes(latestRun.status)
+    && Number(latestRun.total_count || 0) > Number(latestRun.succeeded_count || 0)
+      ? latestRun
+      : null;
+  const recoveryRun = classificationInterrupted ? activeRun : terminalRecoveryRun;
   const activePipelineStep = {
     queued: "ingestion",
     ingestion: "ingestion",
@@ -2929,7 +2954,9 @@ function renderCommandPipeline(snapshot) {
   } : {});
   commandNewCount.textContent = Number(ingestionCounts.inserted || 0).toLocaleString();
   commandUpdatedCount.textContent = Number(ingestionCounts.updated || 0).toLocaleString();
-  commandIngestionMessage.textContent = ingestion?.message || (latestSync
+  commandIngestionMessage.textContent = ingestionInterrupted
+    ? "The previous Gmail worker stopped before finishing. Retry safely from the saved Gmail history cursor."
+    : ingestion?.message || (latestSync
     ? `Last ${displayCategory(latestSync.sync_type)} sync ${latestSync.status} ${new Date(latestSync.started_at).toLocaleString()}.`
     : "Check Gmail for new incoming and sent messages. Drafts remain excluded.");
   const discovered = Number(ingestionCounts.discovered || 0);
@@ -2938,7 +2965,7 @@ function renderCommandPipeline(snapshot) {
     ? discovered > 0 ? Math.max(5, ((discovered - pending) / discovered) * 100) : 5
     : ingestionStatus === "succeeded" ? 100 : 0;
   commandIngestionProgress.style.width = `${Math.min(100, ingestionPercent)}%`;
-  setPipelineStepState(ingestionStep, commandIngestionState, ingestionStatus);
+  setPipelineStepState(ingestionStep, commandIngestionState, ingestionInterrupted ? "interrupted" : ingestionStatus);
 
   const runForDisplay = activeRun || latestRun;
   commandRunProgress.textContent = runForDisplay
@@ -2946,14 +2973,17 @@ function renderCommandPipeline(snapshot) {
     : "No run";
   commandRunProgressLabel.textContent = activeRun ? "current run" : "last run";
   const unclassifiedCount = Number(mailbox.unclassified_emails || 0);
-  const activeRunTotal = Number(activeRun?.total_count || 0);
   const classificationPercent = ingestionRunning
     ? 0
-    : activeRun && activeRunTotal > 0
-      ? (Number(activeRun.processed_count || 0) / activeRunTotal) * 100
+    : runForDisplay && Number(runForDisplay.total_count || 0) > 0
+      ? (Number(runForDisplay.processed_count || 0) / Number(runForDisplay.total_count || 0)) * 100
       : unclassifiedCount === 0 ? 100 : 0;
   commandClassificationProgress.style.width = `${Math.min(100, classificationPercent)}%`;
-  const classificationStatus = ingestionRunning ? null : activeRun?.status || (unclassifiedCount === 0 ? "succeeded" : null);
+  const classificationStatus = ingestionRunning
+    ? null
+    : classificationInterrupted
+      ? "interrupted"
+      : latestRun?.status || (unclassifiedCount === 0 ? "succeeded" : null);
   setPipelineStepState(classificationStep, commandClassificationState, classificationStatus);
 
   const outputWaiting = ingestionRunning || classificationRunning || unclassifiedCount > 0;
@@ -2962,9 +2992,8 @@ function renderCommandPipeline(snapshot) {
   const outputPercent = outputWaiting ? 0 : Number(outputs?.progress_percent ?? (outputStatus === "succeeded" ? 100 : outputStatus === "queued" ? 5 : 0));
   commandOutputProgress.style.width = `${Math.max(0, Math.min(100, outputPercent))}%`;
 
-  const automationRunning = automation.last_automation_status === "running" && automation.pipeline_lock_id;
-  syncNewEmails.disabled = ingestionRunning || classificationRunning || automationRunning || manualPipelineRunning;
-  syncNewEmails.textContent = ingestionRunning ? "Syncing Gmail…" : "Sync new emails";
+  syncNewEmails.disabled = ingestionRunning || classificationRunning || Boolean(recoveryRun) || automationRunning || manualPipelineRunning;
+  syncNewEmails.textContent = ingestionRunning ? "Syncing Gmail…" : ingestionInterrupted ? "Retry Gmail sync" : "Sync new emails";
   const fullMailboxRun = commandClassificationScope.value === "all";
   const replaceExisting = fullMailboxRun && commandClassificationResultMode.value === "replace";
   const selectedEmailCount = fullMailboxRun
@@ -2980,29 +3009,39 @@ function renderCommandPipeline(snapshot) {
     : replaceExisting
       ? "Fresh rebuild: old runs, classifications, and manual/AI overrides are cleared first. Drafts and stars remain."
       : "Every email is classified again; earlier runs remain auditable and current corrections stay active.";
-  startCommandClassification.disabled = classificationControlsLocked || selectedEmailCount === 0;
+  startCommandClassification.dataset.resumeRunId = recoveryRun?.id || "";
+  startCommandClassification.disabled = classificationControlsLocked || (!recoveryRun && selectedEmailCount === 0);
   startCommandClassification.textContent = classificationRunning
     ? "Jev classification running…"
+    : recoveryRun
+      ? `Resume ${Math.max(0, Number(recoveryRun.total_count || 0) - Number(recoveryRun.succeeded_count || 0)).toLocaleString()} remaining`
     : selectedEmailCount === 0
       ? "Everything is classified"
       : fullMailboxRun
         ? `${replaceExisting ? "Replace" : "Reclassify"} ${selectedEmailCount.toLocaleString()} emails`
         : `Classify ${selectedEmailCount.toLocaleString()} new emails`;
   const outputRunning = outputs?.status === "queued" || outputs?.status === "running";
-  const pipelineIngestionRunning = manualPipelineRunning && pipeline?.stage === "ingestion";
-  const pipelineClassificationRunning = manualPipelineRunning && pipeline?.stage === "classification";
   const pipelineOutputRunning = manualPipelineRunning && pipeline?.stage === "publication";
   cancelCommandIngestion.hidden = !(ingestionRunning || pipelineIngestionRunning);
   cancelCommandClassification.hidden = !(classificationRunning || pipelineClassificationRunning);
   cancelCommandOutputs.hidden = !(outputRunning || pipelineOutputRunning);
   refreshCommandOutputs.disabled = ingestionRunning || classificationRunning || automationRunning || manualPipelineRunning || unclassifiedCount > 0 || outputRunning || Number(mailbox.classified_emails || 0) === 0;
   refreshCommandOutputs.textContent = outputRunning ? "Publishing outputs…" : "Publish latest results";
-  runCommandPipeline.disabled = !manualPipelineRunning && (ingestionRunning || classificationRunning || outputRunning || automationRunning);
-  runCommandPipeline.textContent = manualPipelineRunning ? "Stop pipeline" : "Run pipeline";
+  runCommandPipeline.disabled = !manualPipelineRunning && (ingestionRunning || classificationRunning || Boolean(recoveryRun) || outputRunning || automationRunning);
+  runCommandPipeline.textContent = manualPipelineRunning ? "Stop pipeline" : recoveryRun ? "Resume Jev first" : "Run pipeline";
   runCommandPipeline.classList.toggle("primary", !manualPipelineRunning);
   runCommandPipeline.classList.toggle("danger", manualPipelineRunning);
   if (outputs?.status === "failed" && outputs.error) {
     commandStatus.textContent = `Output refresh failed: ${outputs.error}`;
+    commandStatus.classList.add("error");
+  } else if (ingestionInterrupted) {
+    commandStatus.textContent = "The previous Gmail sync was interrupted. Retry continues from Gmail's saved history cursor without duplicating stored messages.";
+    commandStatus.classList.add("error");
+  } else if (classificationInterrupted) {
+    commandStatus.textContent = "The previous Jev worker stopped before it reached a terminal state. Resume continues from its saved checkpoint.";
+    commandStatus.classList.add("error");
+  } else if (terminalRecoveryRun) {
+    commandStatus.textContent = `The last Jev run ${terminalRecoveryRun.status}. Resume retries only its unfinished or failed emails; successful decisions stay saved.`;
     commandStatus.classList.add("error");
   } else if (pipeline?.status === "failed") {
     commandStatus.textContent = `Pipeline failed: ${pipeline.error || "Unknown pipeline error"}`;
@@ -3136,9 +3175,10 @@ async function startGmailSync() {
   }
 }
 
-async function loadCommandRuns() {
+async function loadCommandRuns(forceFresh = false) {
   try {
-    const response = await apiFetch("/api/command/status", { cache: "no-store" });
+    const path = forceFresh ? `/api/command/status?fresh=1&_=${Date.now()}` : "/api/command/status";
+    const response = await apiFetch(path, { cache: "no-store" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not load classification runs");
     renderCommandPipeline(result);
@@ -3146,6 +3186,36 @@ async function loadCommandRuns() {
     commandStatus.textContent = error instanceof Error ? error.message : String(error);
     commandStatus.classList.add("error");
   }
+}
+
+async function resumeCommandRun(runId) {
+  selectPipelineStep("classification");
+  commandStatus.classList.remove("error");
+  commandStatus.textContent = "Recovering the saved Jev checkpoint…";
+  startCommandClassification.disabled = true;
+  try {
+    const response = await apiFetch("/api/command/resume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: runId }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not resume the Jev run");
+    commandStatus.textContent = `Recovery run ${result.run_id} started with ${Number(result.queued_email_count || 0).toLocaleString()} remaining emails.`;
+    await loadCommandRuns(true);
+  } catch (error) {
+    commandStatus.textContent = error instanceof Error ? error.message : String(error);
+    commandStatus.classList.add("error");
+  }
+}
+
+async function handleCommandClassificationAction() {
+  const runId = startCommandClassification.dataset.resumeRunId;
+  if (runId) {
+    await resumeCommandRun(runId);
+    return;
+  }
+  await startCommandRun();
 }
 
 async function startCommandRun() {
@@ -3508,7 +3578,7 @@ async function initialize() {
     document.querySelector("#refreshBenchmark").addEventListener("click", () => void loadBenchmark());
     benchmarkFilter.addEventListener("change", renderBenchmarkRows);
     benchmarkScope.addEventListener("change", () => void loadBenchmark());
-    document.querySelector("#refreshCommand").addEventListener("click", () => void loadCommandRuns());
+    document.querySelector("#refreshCommand").addEventListener("click", () => void loadCommandRuns(true));
     commandClassificationScope.addEventListener("change", () => {
       if (commandClassificationScope.value === "all") commandClassificationResultMode.value = "replace";
       syncCommandClassificationOptions();
@@ -3517,7 +3587,7 @@ async function initialize() {
     runCommandPipeline.addEventListener("click", () => void handleCommandPipelineAction());
     syncNewEmails.addEventListener("click", () => void startGmailSync());
     cancelCommandIngestion.addEventListener("click", () => void cancelCommandJob("ingestion"));
-    startCommandClassification.addEventListener("click", () => void startCommandRun());
+    startCommandClassification.addEventListener("click", () => void handleCommandClassificationAction());
     cancelCommandClassification.addEventListener("click", () => void cancelCommandJob("classification"));
     refreshCommandOutputs.addEventListener("click", () => void publishCommandOutputs());
     cancelCommandOutputs.addEventListener("click", () => void cancelCommandJob("outputs"));

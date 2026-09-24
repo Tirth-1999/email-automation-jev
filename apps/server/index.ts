@@ -36,6 +36,8 @@ import {
   type RunScope,
 } from "../../lib/classification-worker.js";
 import {
+  createClassificationRun,
+  enqueueClassificationEmails,
   getClassificationRun,
   listRecentClassificationRuns,
   requestClassificationCancellation,
@@ -83,7 +85,10 @@ import {
 import {
   answerConversationWithOpenAI,
   answerSqlResultWithOpenAI,
+  aiChatSqlFailureMessage,
   generateSqlWithOpenAI,
+  isRepairableSqlExecutionError,
+  repairSqlWithOpenAI,
 } from "../../lib/nl-sql-chat.js";
 import {
   routeAiChatMessage,
@@ -518,17 +523,18 @@ async function loadCommandPipelineBase() {
       ...(automation || {}),
     },
     sync_runs: syncResult.data || [],
-    runs,
+    runs: runs.filter((run) => run.run_kind === "production" || run.run_kind === "reprocess"),
   };
 }
 
-async function commandPipelineSnapshot() {
+async function commandPipelineSnapshot(forceFresh = false) {
   const live = Boolean(
     activeManualPipeline ||
     gmailIngestion.isRunning() ||
     activeClassificationRuns.size > 0 ||
     activeOutputRefresh,
   );
+  if (forceFresh) await analyticsSnapshotCache.delete([commandCenterCacheKey]);
   let base = live
     ? null
     : await analyticsSnapshotCache.get<Awaited<ReturnType<typeof loadCommandPipelineBase>>>(commandCenterCacheKey);
@@ -541,14 +547,48 @@ async function commandPipelineSnapshot() {
     outputs: outputRefresh,
     ingestion: gmailIngestion.current(),
     pipeline: manualPipeline,
+    runtime: {
+      classification_run_ids: [...activeClassificationRuns.keys()],
+      classification_worker_running: activeClassificationRuns.size > 0,
+      manual_pipeline_running: Boolean(activeManualPipeline),
+      output_refresh_running: Boolean(activeOutputRefresh),
+      gmail_ingestion_running: gmailIngestion.isRunning(),
+    },
     cache: { backend: analyticsSnapshotCache.backend(), live_bypass: live },
   };
+}
+
+async function createRecoveryClassificationRun(sourceRunId: string) {
+  const source = await getClassificationRun(database, sourceRunId);
+  const { data, error } = await database
+    .from("email_classifications")
+    .select("email_id,status")
+    .eq("run_id", sourceRunId)
+    .neq("status", "succeeded");
+  if (error) throw new Error(`Could not load unfinished classifications: ${error.message}`);
+  const emailIds = [...new Set((data || []).map((row) => String(row.email_id)))];
+  if (!emailIds.length) throw new Error("This run has no unfinished or failed emails to resume");
+  const recovery = await createClassificationRun(database, {
+    gmail_account_id: source.gmail_account_id,
+    classifier_version: source.classifier_version,
+    classifier_config: source.classifier_config,
+    run_kind: "reprocess",
+    model_requested: source.model_requested,
+    selection: { scope: "resume", source_run_id: sourceRunId },
+    minimum_top_probability: Number(source.minimum_top_probability),
+    concurrency: source.concurrency,
+    batch_size: source.batch_size,
+  });
+  await enqueueClassificationEmails(database, recovery.id, emailIds);
+  return { run: recovery, queuedEmailCount: emailIds.length };
 }
 
 async function classificationIsActive(): Promise<boolean> {
   if (activeClassificationRuns.size > 0) return true;
   const runs = await listRecentClassificationRuns(database, 5);
-  return runs.some((run) => run.status === "queued" || run.status === "running");
+  return runs.some((run) =>
+    (run.run_kind === "production" || run.run_kind === "reprocess")
+    && (run.status === "queued" || run.status === "running"));
 }
 
 function startGmailIngestion() {
@@ -1449,7 +1489,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
   if (request.method === "GET" && path === "/api/command/status") {
-    json(response, 200, await commandPipelineSnapshot());
+    json(response, 200, await commandPipelineSnapshot(requestUrl.searchParams.get("fresh") === "1"));
     return;
   }
   if (request.method === "POST" && path === "/api/command/pipeline") {
@@ -1612,15 +1652,42 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       json(response, 409, { error: "Wait for Gmail ingestion to finish before resuming Jev classification" });
       return;
     }
-    const run = await getClassificationRun(database, runId);
+    if (activeManualPipeline || activeOutputRefresh) {
+      json(response, 409, { error: "Wait for the active mailbox pipeline step to finish before resuming Jev classification" });
+      return;
+    }
+    if (activeClassificationRuns.size > 0) {
+      json(response, 409, { error: "A Jev classification worker is already running" });
+      return;
+    }
+    if (await automationLockActive(await primaryAccountId())) {
+      json(response, 409, { error: "The scheduled mailbox pipeline is currently running" });
+      return;
+    }
+    const sourceRun = await getClassificationRun(database, runId);
+    if (sourceRun.run_kind !== "production" && sourceRun.run_kind !== "reprocess") {
+      json(response, 400, { error: "Only production classification runs can be resumed from Command Center" });
+      return;
+    }
+    const terminal = ["partial", "failed", "cancelled"].includes(sourceRun.status);
+    const recovery = terminal
+      ? await createRecoveryClassificationRun(runId)
+      : { run: sourceRun, queuedEmailCount: Math.max(0, sourceRun.total_count - sourceRun.succeeded_count) };
+    const run = recovery.run;
     const config = workerConfig({
       model: run.model_requested,
       minimum_top_probability: Number(run.minimum_top_probability),
       concurrency: run.concurrency,
       batch_size: run.batch_size,
     });
-    setImmediate(() => startBackgroundClassification(runId, config));
-    json(response, 202, { run_id: runId, resumed: true });
+    invalidateReadCaches();
+    setImmediate(() => startBackgroundClassification(run.id, config));
+    json(response, 202, {
+      run_id: run.id,
+      source_run_id: runId,
+      resumed: true,
+      queued_email_count: recovery.queuedEmailCount,
+    });
     return;
   }
   if (request.method === "GET" && path === "/api/applications") {
@@ -2181,12 +2248,55 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       });
       return;
     }
-    const generated = await generateSqlWithOpenAI(apiKey, model, question, history);
-    const { data, error } = await database.rpc("execute_ai_readonly_sql", {
+    let generated = await generateSqlWithOpenAI(apiKey, model, question, history);
+    let execution = await database.rpc("execute_ai_readonly_sql", {
       p_gmail_account_id: accountId,
       p_sql: generated.sql,
     });
-    if (error) throw new Error(`AI Chat SQL failed. Apply migration 011 first. ${error.message}`);
+    const firstExecutionError = execution.error;
+    if (firstExecutionError && isRepairableSqlExecutionError(firstExecutionError)) {
+      generated = await repairSqlWithOpenAI(
+        apiKey,
+        model,
+        question,
+        history,
+        generated.sql,
+        firstExecutionError.message,
+      );
+      execution = await database.rpc("execute_ai_readonly_sql", {
+        p_gmail_account_id: accountId,
+        p_sql: generated.sql,
+      });
+    }
+    const { data, error } = execution;
+    if (error) {
+      const answer = aiChatSqlFailureMessage(error);
+      await saveAiChatMessage({
+        conversationId: conversation.id,
+        role: "assistant",
+        content: answer,
+        route: route.route,
+        routeConfidence: route.confidence,
+        model,
+        toolUsed: true,
+        generatedSql: generated.sql,
+        rowCount: 0,
+      });
+      json(response, 200, {
+        answer,
+        sql: generated.sql,
+        explanation: "The database rejected both the initial query and one schema-aware repair attempt.",
+        row_count: 0,
+        rows: [],
+        model,
+        tool_used: true,
+        tool_error: true,
+        route,
+        conversation_id: conversation.id,
+        conversation_title: conversationTitle,
+      });
+      return;
+    }
     const rows = Array.isArray(data) ? data as Array<Record<string, unknown>> : [];
     const answer = await answerSqlResultWithOpenAI(apiKey, model, question, generated.sql, rows);
     await saveAiChatMessage({

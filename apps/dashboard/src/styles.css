@@ -211,6 +211,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .pipeline-state.running { background: var(--blue-soft); color: var(--blue); }
 .pipeline-state.succeeded { background: #ecfdf3; color: var(--green); }
 .pipeline-state.failed { background: #fff1f2; color: #b42318; }
+.pipeline-state.interrupted { background: #fff1f2; color: #b42318; }
 .pipeline-state.cancelled { background: #fff7df; color: #8a5a00; }
 .pipeline-state.waiting { background: #f1f3f7; color: #667085; }
 .pipeline-step > p { min-height: 38px; color: var(--muted); font-size: 11px; line-height: 1.5; }

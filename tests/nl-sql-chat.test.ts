@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { answerSqlResultWithOpenAI, buildSqlGenerationInput, generateSqlWithOpenAI, validateReadOnlySql, validateSqlForQuestion } from "../lib/nl-sql-chat.js";
+import { aiChatSqlFailureMessage, answerSqlResultWithOpenAI, buildSqlGenerationInput, generateSqlWithOpenAI, isRepairableSqlExecutionError, repairSqlWithOpenAI, validateReadOnlySql, validateSqlForQuestion } from "../lib/nl-sql-chat.js";
 
 test("NL-to-SQL accepts a scoped read over approved mailbox data", () => {
   const sql = "SELECT company, count(*) FROM applications WHERE gmail_account_id = :gmail_account_id GROUP BY company LIMIT 100";
@@ -68,6 +68,47 @@ test("role-list semantic validation rejects grouped counts that hide missing rol
     /must include requisition_id|detail rows/i,
   );
   assert.equal(validateSqlForQuestion("For what all roles did we apply?", goodSql), goodSql);
+});
+
+test("schema-drift repair supplies the failed SQL and database error", async () => {
+  let requestBody: Record<string, unknown> = {};
+  const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+    requestBody = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+    return new Response(JSON.stringify({
+      output_text: JSON.stringify({
+        sql: "SELECT id, company FROM applications WHERE gmail_account_id = :gmail_account_id AND is_starred = true LIMIT 100",
+        explanation: "Use the source relation that contains the star field.",
+      }),
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  await repairSqlWithOpenAI(
+    "test",
+    "gpt-4o-mini",
+    "Show starred applications",
+    [],
+    "SELECT id, company FROM application_board WHERE gmail_account_id = :gmail_account_id AND is_starred = true",
+    'column "is_starred" does not exist',
+    fetcher as typeof fetch,
+  );
+  const input = JSON.parse(String(requestBody.input)) as { repair: { failed_sql: string; database_error: string } };
+  assert.match(input.repair.failed_sql, /application_board/);
+  assert.match(input.repair.database_error, /is_starred/);
+  assert.match(String(requestBody.instructions), /previous query failed against the live database schema/i);
+});
+
+test("SQL execution errors distinguish repairable queries from missing infrastructure", () => {
+  assert.equal(isRepairableSqlExecutionError({ code: "42703", message: 'column "is_starred" does not exist' }), true);
+  assert.equal(isRepairableSqlExecutionError({ code: "42803", message: "grouping error" }), true);
+  assert.equal(isRepairableSqlExecutionError({ code: "42501", message: "permission denied" }), false);
+  assert.match(
+    aiChatSqlFailureMessage({ code: "PGRST202", message: "Could not find execute_ai_readonly_sql" }),
+    /Apply migration 011/i,
+  );
+  assert.doesNotMatch(
+    aiChatSqlFailureMessage({ code: "PGRST204", message: "Could not find is_starred in the schema cache" }),
+    /migration 011/i,
+  );
 });
 
 test("large SQL results become a structured summary instead of a record dump", async () => {

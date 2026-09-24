@@ -3,6 +3,39 @@ export interface GeneratedSql {
   explanation: string;
 }
 
+interface SqlRepairContext {
+  failed_sql: string;
+  database_error: string;
+}
+
+interface SqlExecutionError {
+  code?: string;
+  message?: string;
+}
+
+const REPAIRABLE_SQL_ERROR_CODES = new Set([
+  "42601", // syntax error
+  "42702", // ambiguous column
+  "42703", // undefined column
+  "42803", // invalid grouping
+  "42804", // datatype mismatch
+  "42883", // undefined function/operator
+  "42P01", // undefined relation
+  "PGRST204", // PostgREST missing column
+]);
+
+export function isRepairableSqlExecutionError(error: SqlExecutionError | null): boolean {
+  return Boolean(error?.code && REPAIRABLE_SQL_ERROR_CODES.has(error.code));
+}
+
+export function aiChatSqlFailureMessage(error: SqlExecutionError): string {
+  const message = error.message || "";
+  if (error.code === "PGRST202" || /(?:could not find|does not exist).*execute_ai_readonly_sql/i.test(message)) {
+    return "AI Chat's database read function is unavailable. Apply migration 011 and restart the server.";
+  }
+  return "AI Chat could not produce a query compatible with the current database schema. Please retry the question.";
+}
+
 export interface NlSqlAnswer {
   answer: string;
   sql: string;
@@ -75,6 +108,7 @@ QUERY RECIPES
 export function buildSqlGenerationInput(
   question: string,
   history: Array<{ role: "user" | "assistant"; text: string }> = [],
+  repair: SqlRepairContext | null = null,
 ): string {
   return JSON.stringify({
     reporting_model: SCHEMA,
@@ -84,6 +118,7 @@ export function buildSqlGenerationInput(
     })),
     latest_user_question: question.slice(0, 2_000),
     requested_answer_shape: requestedAnswerShape(question),
+    ...(repair ? { repair } : {}),
   });
 }
 
@@ -139,11 +174,12 @@ export function validateSqlForQuestion(question: string, sqlValue: string): stri
   return sql;
 }
 
-export async function generateSqlWithOpenAI(
+async function requestSqlWithOpenAI(
   apiKey: string,
   model: string,
   question: string,
-  history: Array<{ role: "user" | "assistant"; text: string }> = [],
+  history: Array<{ role: "user" | "assistant"; text: string }>,
+  repair: SqlRepairContext | null,
   fetcher: typeof fetch = fetch,
 ): Promise<GeneratedSql> {
   const response = await fetcher("https://api.openai.com/v1/responses", {
@@ -161,10 +197,11 @@ export async function generateSqlWithOpenAI(
         "For totals, comparisons, distributions, or trends, prefer SQL aggregation with count, group by, date_trunc, min, or max so the result describes the full scoped dataset instead of an arbitrary detail-row slice.",
         "For which/what/list/show/name questions, return the matching detail records needed to enumerate the answer; do not replace the requested values with only COUNT or GROUP BY output.",
         "For a role-list question, select role, requisition_id, latest_subject, and current_status from application_board. Role is nullable, so latest_subject is required as supporting evidence when the normalized role is missing.",
+        ...(repair ? ["The previous query failed against the live database schema. Correct it using the supplied database error, and do not reuse an unavailable relation or column."] : []),
         "Use recent conversation only to resolve references in the latest question; the latest question remains authoritative.",
         "Do not return email bodies. Return at most 100 detail rows. Do not use SQL comments or a semicolon.",
       ].join(" "),
-      input: buildSqlGenerationInput(question, history),
+      input: buildSqlGenerationInput(question, history, repair),
       max_output_tokens: 700,
       text: {
         format: {
@@ -190,6 +227,31 @@ export async function generateSqlWithOpenAI(
   if (!output) throw new Error("OpenAI returned no SQL");
   const parsed = JSON.parse(output) as GeneratedSql;
   return { sql: validateSqlForQuestion(question, parsed.sql), explanation: String(parsed.explanation || "") };
+}
+
+export async function generateSqlWithOpenAI(
+  apiKey: string,
+  model: string,
+  question: string,
+  history: Array<{ role: "user" | "assistant"; text: string }> = [],
+  fetcher: typeof fetch = fetch,
+): Promise<GeneratedSql> {
+  return requestSqlWithOpenAI(apiKey, model, question, history, null, fetcher);
+}
+
+export async function repairSqlWithOpenAI(
+  apiKey: string,
+  model: string,
+  question: string,
+  history: Array<{ role: "user" | "assistant"; text: string }>,
+  failedSql: string,
+  databaseError: string,
+  fetcher: typeof fetch = fetch,
+): Promise<GeneratedSql> {
+  return requestSqlWithOpenAI(apiKey, model, question, history, {
+    failed_sql: failedSql.slice(0, 5_000),
+    database_error: databaseError.slice(0, 500),
+  }, fetcher);
 }
 
 export async function answerSqlResultWithOpenAI(
