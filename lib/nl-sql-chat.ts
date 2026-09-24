@@ -97,7 +97,10 @@ function responseText(payload: { output_text?: string; output?: Array<{ content?
 }
 
 export function validateReadOnlySql(sqlValue: string): string {
-  const sql = sqlValue.trim();
+  // Models commonly terminate an otherwise valid single SELECT with one
+  // semicolon. Normalize that delimiter before applying the strict guard;
+  // any remaining semicolon still indicates multiple statements.
+  const sql = sqlValue.trim().replace(/;$/, "").trim();
   if (!sql || sql.length > 5_000) throw new Error("Generated SQL is empty or too long");
   if (!/^(?:select|with)\b/i.test(sql)) throw new Error("AI Chat permits only SELECT queries");
   if (sql.includes(";") || /--|\/\*/.test(sql)) throw new Error("SQL comments and multiple statements are not allowed");

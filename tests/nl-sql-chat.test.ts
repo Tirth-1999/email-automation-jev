@@ -5,12 +5,15 @@ import { answerSqlResultWithOpenAI, buildSqlGenerationInput, generateSqlWithOpen
 test("NL-to-SQL accepts a scoped read over approved mailbox data", () => {
   const sql = "SELECT company, count(*) FROM applications WHERE gmail_account_id = :gmail_account_id GROUP BY company LIMIT 100";
   assert.equal(validateReadOnlySql(sql), sql);
+  assert.equal(validateReadOnlySql(`${sql};`), sql);
 });
 
 test("NL-to-SQL rejects mutation, unscoped, multi-statement, and unknown-relation queries", () => {
   assert.throws(() => validateReadOnlySql("DELETE FROM applications WHERE gmail_account_id = :gmail_account_id"));
   assert.throws(() => validateReadOnlySql("SELECT * FROM applications LIMIT 10"));
   assert.throws(() => validateReadOnlySql("SELECT * FROM applications WHERE gmail_account_id = :gmail_account_id; DROP TABLE applications"));
+  assert.throws(() => validateReadOnlySql("SELECT * FROM applications WHERE gmail_account_id = :gmail_account_id;;"));
+  assert.throws(() => validateReadOnlySql("SELECT * FROM applications WHERE gmail_account_id = :gmail_account_id -- unsafe comment"));
   assert.throws(() => validateReadOnlySql("SELECT * FROM gmail_accounts WHERE id = :gmail_account_id"));
 });
 
