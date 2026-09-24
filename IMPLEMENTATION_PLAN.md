@@ -25,14 +25,15 @@ Build a dependable job-email workspace that:
 | 3 | Jev classifier and benchmark | Complete for category ground truth; other judgments remain unscored | `npm run jev:prepare`<br>`npm run jev:evaluate`<br>`npm run jev:evaluate:all` |
 | 4 | Dashboard shell and UI migration | Complete | `npm run dashboard`<br>Optional: `LABELING_UI_PORT=4174 npm run dashboard` |
 | 5 | Durable run, result, and human-label storage | Complete; simplified to five tables and one read view | Apply migrations `002` through `005` in order<br>`npm run phase5:bootstrap` |
-| 6 | Classification worker and Command Center | Complete; the UI orchestrates incremental Gmail sync → unclassified Jev run → publication to Email Board, Applications, and Analytics | `npm run dashboard`<br>Open **Command Center** and run the three numbered steps<br>CLI fallback: `npm run classify -- --scope unclassified --limit 25 --concurrency 3 --batch-size 10` |
+| 6 | Classification worker and Command Center | Complete; the UI orchestrates incremental Gmail sync → unclassified Jev run → publication, while an explicit full run resets prior classifications/overrides and preserves stars on their source-email anchors | Apply migrations `015`–`017` before the first clean rebuild<br>`npm run dashboard` for incremental operation<br>Fresh rebuild: `npm run classify -- --scope all`, then `npm run applications:group` |
 | 7 | Full-dataset validation and production classification | Complete; the full mailbox has 6,602 classified emails, including a successful 6,152-email production run after controlled validation | `npm run dashboard`, then use **Command Center** for incremental production runs<br>Use **Jev Lab → Performance** only for disposable timing experiments |
 | 8 | Human corrections and LLM reply drafts | Complete; GPT-4o Mini drafting is limited to Reply Needed emails | `npm run dashboard`<br>Open **Application Board → Emails**, select an email, correct its category or generate a draft<br>Configure `OPENAI_API_KEY`, `OPENAI_MODEL=gpt-4o-mini`, and optional `REPLY_WRITING_PROFILE` |
 | 9 | Email decisions and analytics | Complete; Kanban lanes, category/action filtering, live mailbox aggregates, confidence, benchmark quality, and durable-run performance | `npm run dashboard`<br>Open **Application Board → Emails** or **Analytics**<br>Click an Analytics category/action bar to inspect its source emails |
 | 10 | Application grouping, lifecycle, and application board | Complete for the classified corpus; deterministic identity rules plus confidence-gated Jev relationship checks handle reused Gmail threads, with automatic materialization, explainable ghosting, manual review, application Kanban, and Sankey | Apply `006_application_lifecycle.sql` once<br>Normally publish from **Command Center**; recovery: `npm run applications:group`<br>Open **Application Board → Applications** or **Analytics** |
 | 11 | Scheduling, observability, and draft assistance | Complete; hourly incremental orchestration, atomic lease, structured body-free logs, health probe, optional failure webhook, and reviewed drafts | Apply `007_operations_automation.sql` once<br>Test: `npm run automate:once`<br>Continuous runner: `npm run scheduler`<br>Probe: `GET /api/operations/health` |
 | 12 | Targeted AI review, relationships, stars, and streaming reply workspace | Complete; migration 008 is live and the AI workspace preserves Jev, LLM, and human decisions separately | Apply `008_ai_assistance.sql` once<br>`npm run dashboard`, then open **AI** or **Application Board**<br>Optional measured eval: `npm run ai:evaluate -- --limit=20` |
-| 13 | Read-only AI chat / RAG | Later roadmap; the visual shell is present but has no query tools yet | Not available yet |
+| 13A | Probabilistic company identity | Complete; all 4,583 applications staged with zero failures, then 3,325 company values and 1,323 titles promoted above the strict 90% gate | `npm run companies:resolve`<br>`npm run companies:promote -- --threshold=0.90` |
+| 13B | Jev-routed AI Chat | Complete; Jev conditionally invokes SQL and durable Supabase chat sessions support new, reopen, and archive flows | Apply migrations `011` and `013`<br>`npm run dashboard`<br>Open **AI Space → AI Chat** |
 
 Run all commands from the repository root. Keep secrets in `.env`, use `.env.example` as the checklist, and never commit `.env`, `.gmail-token.json`, or `data/labeling/generated/`. `npm run check` is the final validation command after every implemented phase.
 
@@ -50,7 +51,7 @@ Run all commands from the repository root. Keep secrets in `.env`, use `.env.exa
 
 ## Product language
 
-- **Email category:** `applied`, `outreach`, `reply_needed`, `interview_assessment`, `offer`, `rejected`, or `other`.
+- **Email category:** `applied`, `outreach`, `reply_needed`, `information_needed`, `interview_assessment`, `offer`, `rejected`, or `other`.
 - **Next action:** what the user should do, such as write a reply, open a link, fill a form, schedule, or complete an assessment.
 - **Urgency:** how quickly the next action should be handled.
 - **Draft needed:** whether a written email response should be prepared.
@@ -148,7 +149,10 @@ Status: the initial set contains 200 unique reviewed emails with a deterministic
 
 ### Rules
 
-- Categories are `applied`, `outreach`, `reply_needed`, `interview_assessment`, `offer`, `rejected`, and `other`.
+- Categories are `applied`, `outreach`, `reply_needed`, `information_needed`, `interview_assessment`, `offer`, `rejected`, and `other`.
+- `information_needed` is a required administrative candidate-data request (for example EEO, WOTC, self-identification, eligibility, profile, or missing details). It is not an interview, evaluative assessment, or feedback survey about the candidate's hiring experience.
+- Candidate-experience, application-experience, and interview-process feedback/satisfaction surveys are `other`; they collect opinions about the process rather than application information about the candidate.
+- `reply_needed` requires a written response. `interview_assessment` is reserved for interviews, scheduling, screenings, and tests that evaluate the candidate.
 - Sampling is duplicate-free and may be repeated to improve category coverage.
 - Important rare senders or outcomes, such as the known ATC offer, may be deliberately oversampled.
 - Ambiguous items may remain in manual review instead of receiving false certainty.
@@ -176,7 +180,7 @@ The growing “parent document” is a versioned classifier configuration derive
 
 ## Phase 3 — Jev classifier and benchmark
 
-Status: a versioned multi-judgment classifier and API-backed evaluation UI are working.
+Status: a versioned multi-judgment classifier and API-backed evaluation UI are working. Classifier v5 introduced the separately measurable `information_needed` category; v6 makes interview/application feedback surveys explicitly `other`.
 
 ### One request per email
 
@@ -189,15 +193,17 @@ The current classifier asks four independent questions over the same normalized 
 
 Application policy may set `should_draft` only when the category is `reply_needed` and the Noul probability passes the configured threshold.
 
-### Current benchmark baseline
+### Previous benchmark baseline and current release gate
 
-- Held-out set: 39 emails, classifier v4.
+- Held-out set: 39 emails, classifier v4 (historical baseline).
 - Raw category accuracy: 87.2%.
 - Automatic coverage: 97.4%.
 - Accuracy among automatically accepted results: 86.8%.
 - All-label diagnostic: 199 emails, 89.4% raw accuracy and 90.1% automatic accuracy at 96.5% coverage.
 
 The all-label run is diagnostic because it includes development examples. Only the held-out run is an unbiased release gate.
+
+Classifier v6 must be rerun through the same held-out and all-label commands with representative administrative-form and candidate-feedback examples. The dashboard marks reports from earlier classifier versions stale instead of presenting them as v6 evidence.
 
 ### Remaining acceptance checks
 
@@ -438,7 +444,7 @@ Confirmed corrections enter the next dataset version. Every changed criterion/ex
 
 ### Email Board
 
-Kanban lanes run horizontally with the action-heavy categories first: Reply Needed, Interview / Assessment, Offer, Applied, Outreach, Rejected, Other, and Uncertain. The browser fetches only the first 30 cards in each visible lane in parallel, retains the complete database count in every heading, and loads additional cards inside that lane on demand. This keeps the first render responsive without hiding older email decisions.
+Kanban lanes run horizontally with the action-heavy categories first: Reply Needed, Information Needed, Interview / Assessment, Offer, Applied, Outreach, Rejected, Other, and Uncertain. The browser fetches only the first 30 cards in each visible lane in parallel, retains the complete database count in every heading, and loads additional cards inside that lane on demand. This keeps the first render responsive without hiding older email decisions.
 
 Cards show subject, sender/company hint, date, next action, urgency, confidence, and direction. Opening a card shows full evidence and its Gmail link. Moving a card starts the manual correction flow; it does not mutate historical inference. Filters include result set, date, confidence, direction, category, and next action.
 
@@ -461,7 +467,7 @@ Introduce `applications`, `application_messages`, and `application_status_events
 
 Grouping uses a cascade rather than equating Gmail threads with applications: explicit requisition conflicts split immediately; matching requisitions or company/role evidence join deterministically; outgoing replies stay connected when no conflict exists; and unresolved same-thread pairs are sent to a batched Jev Noul asking whether they represent the same specific opportunity. The application only joins high-probability matches and conservatively separates API failures or uncertain answers.
 
-Only then add one card per application, deterministic lifecycle precedence, explainable conversation-based ghosting, company funnels, conversion/time-to-response analytics, and Sankey paths such as `Applied → Reply Needed → Interview / Assessment → Offer / Rejected / Ghosted`. Separate cold-outreach threads remain independent and retain Outreach unless later inbound evidence establishes a conversation. Building those metrics directly from email counts would double-count applications.
+Only then add one card per application, deterministic lifecycle precedence, explainable conversation-based ghosting, company funnels, conversion/time-to-response analytics, and Sankey paths such as `Applied → Information Needed / Reply Needed → Interview / Assessment → Offer / Rejected / Ghosted`. Separate cold-outreach threads remain independent and retain Outreach unless later inbound evidence establishes a conversation. Building those metrics directly from email counts would double-count applications.
 
 ---
 
@@ -486,13 +492,13 @@ Gmail push notifications remain a later optimization. Hourly incremental history
 
 Status: complete. Migration 008 extends the existing `emails` and `applications` tables rather than creating more tables.
 
-- Jev remains the fast primary classifier. **AI Brain** can review a complete `reply_needed`, `interview_assessment`, or `offer` lane (or only its pending entries) with GPT-4o Mini and a strict JSON schema. It summarizes agreements, proposed reclassifications, and high-confidence relationships that may indicate duplicate applications; each result remains individually inspectable.
+- Jev remains the fast primary classifier. **AI Brain** can review a complete `reply_needed`, `information_needed`, `interview_assessment`, or `offer` lane (or only its pending entries) with GPT-4o Mini and a strict JSON schema. It summarizes agreements, proposed reclassifications, and high-confidence relationships that may indicate duplicate applications; each result remains individually inspectable.
 - The UI exposes the exact bounded input, schema-validated output, model, confidence, evidence, and whether the reviewer disagrees with Jev.
 - Application relationship recommendations require company plus role/requisition evidence. A shared Gmail or job-board thread is insufficient, and the user must explicitly confirm any join at 85% or higher relationship confidence.
 - The Reply Needed modal keeps the email and streamed draft side by side, restores saved drafts, supports configured model choices, and never sends mail.
 - Reply cards show whether a draft is waiting, suggested, or human-reviewed.
 - Application cards can be starred without changing their lifecycle status. Starred is a durable secondary view; the original card remains in its status lane.
-- Important application lanes appear first in one parallel horizontal board: Starred, Reply Needed, Interview / Assessment, Offer, Applied, Outreach, Rejected, and Ghosted. Each lane scrolls vertically, the board scrolls horizontally, and only the first 30 cards per lane are fetched until the user asks for more.
+- Important application lanes appear first in one parallel horizontal board: Starred, Reply Needed, Information Needed, Interview / Assessment, Offer, Applied, Outreach, Rejected, and Ghosted. Each lane scrolls vertically, the board scrolls horizontally, and only the first 30 cards per lane are fetched until the user asks for more.
 - `npm run ai:evaluate -- --limit=20` evaluates the structured reviewer against the human-labeled high-value subset and writes a private JSON report. This is a measured advisory-model eval, not new Jev training.
 - The current mailbox was regrouped after the corrected outreach/ghosting rules: cold outreach remains Outreach, while Ghosted requires a real back-and-forth conversation ending in an unanswered outgoing message.
 
@@ -500,19 +506,77 @@ The OpenAI integration uses the Responses API with `store: false`, strict struct
 
 ---
 
-## Phase 13 — AI Assistant / RAG roadmap
+## Phase 13A — Probabilistic company identity
 
-This is intentionally deferred until classification and application grouping are reliable. The separate **AI Chat** sub-tab establishes its product location without mixing it into AI Brain. A future read-only assistant will support questions such as “How many applications did I complete this month?” and “Show interviews needing action.”
+Status: complete for the requested one-time pass. The live audit found that company coverage was high but identity quality was not: person names, staffing agencies, ATS platforms, sender-domain abbreviations, and subject fragments were often stored as employers. All 4,583 applications were staged with zero Jev failures. The explicit 90% promotion updated 3,325 company values and 1,323 titles while retaining their previous values in staging.
 
-- Use safe SQL/query tools for structured counts, filters, and aggregations.
-- Use retrieval over email/application text only for semantic evidence questions.
-- Return citations that open the supporting email, application, or result set.
-- Scope every query to the connected user/account.
-- Do not expose arbitrary SQL, service credentials, or unrestricted database access to the model.
-- Do not let the assistant send, delete, relabel, or modify email initially.
-- Add vector storage only if measured semantic retrieval quality justifies it; Supabase `pgvector` is the first option before another datastore.
+### Resolution contract
 
-This feature remains roadmap/technical debt. The AI Chat sub-tab includes only a disabled visual shell so the future product location is clear; it does not pretend to answer mailbox questions yet.
+- Resolve one grouped application at a time so every connected incoming and outgoing message can contribute evidence. Include Outreach, Applied, Reply Needed, Information Needed, Interview / Assessment, Offer, Rejected, Ghosted, and future Uncertain applications; explicitly exclude `other`.
+
+---
+
+## Information Needed category and classifier v6 refinement
+
+Migration `014_information_needed_category.sql` widens the existing checks on `email_classifications`, `emails`, `applications`, and `application_status_events`; it creates no new table. Redis namespaces for Command Center, Application Board, Analytics, and AI Brain are versioned so old snapshots cannot hide the new lane.
+
+Release sequence:
+
+1. Apply migration `014` in the Supabase SQL editor.
+2. Restart `npm run dashboard` so the server uses the current classifier contract and cache namespaces.
+3. Run `npm run jev:prepare`, then `npm run jev:evaluate` and `npm run jev:evaluate:all` after adding representative administrative-form and candidate-feedback labels.
+4. Reclassify with `npm run classify -- --scope all` (or use the version-aware unclassified run) and publish with `npm run applications:group`.
+5. Verify Email and Application boards, AI Brain, and Analytics show the Information Needed lane; EEO/WOTC forms must not occupy Interview / Assessment, and candidate/interview feedback surveys must remain Other.
+
+Ordinary incremental and version-aware runs preserve historical classifications. An explicitly requested `--scope all` run is the exception: migrations `015` and `017` atomically remove prior account-scoped runs/results, current human/AI email overrides, and manual application links/events before the fresh run is created. Migration `016` anchors each application star to its latest source email without adding a table. Publication derives the new grouping from fresh Jev results and transfers that star to the application containing the anchor, so its displayed values and Gmail evidence links are current rather than inherited from the discarded correction. Source emails, private label JSON, drafts, and star anchors are preserved.
+- Build bounded company and title candidate sets in code from the existing values, sender and recipient names/domains, subject and body phrases, links, and signature lines. Code discovers candidates; it does not pretend that one location is always correct.
+- Ask Jev four independent `Choice` questions over the same state: actual hiring employer/end client, specific job title, recruiting or staffing agency, and ATS/job-board platform. Every choice includes `none` so Jev is never forced to invent an identity.
+- Preserve both company and title selections, complete probability distributions, Choice confidences, model, token usage, candidate evidence, and deterministic context hash.
+- Evaluate company and title uncertainty separately. Each defaults to later review when its answer is `none`, its winning probability is below `0.80`, or Choice confidence is below `0.65`. All four thresholds remain independently configurable and must be calibrated on reviewed mailbox examples.
+- Never overwrite `applications.company` during discovery. Promotion, application regrouping, and downstream analytics happen only after measured human review.
+
+### Staging and execution
+
+- Migration 010 adds one private `application_company_resolutions` staging table. It is keyed by application, protected by RLS, and accessible only to the server service role.
+- `npm run companies:resolve` loads application/email context once, runs bounded concurrent Jev calls, and writes each completed batch with one Supabase upsert.
+- Reruns skip unchanged successful or uncertain records by context hash. `--force` deliberately reevaluates them; `--limit` supports cheap validation before the full corpus.
+- Records with no viable candidates or weak employer evidence remain visible as `uncertain` rather than receiving a guessed company.
+
+### Phase 13A acceptance criteria
+
+- [x] Migration 010 applies with browser roles denied and service-role access only.
+- [x] A 50-application validation run completed without changing `applications` or application grouping.
+- [x] Company and title distributions and confidence are retained separately for inspection.
+- [x] Repeating an unchanged run makes no Jev calls for current successful or uncertain rows.
+- [x] The full application corpus completed resumably with zero failures.
+- [x] Explicit promotion requires both confidence and winning probability above 90%, records previous values and timestamps, and survives later publication rebuilds.
+
+---
+
+## Phase 13B — NL-to-SQL AI Chat
+
+Status: implemented. AI Chat is intentionally small: Jev performs a typed route decision, SQL is conditional, and there is no RAG, embedding, or vector-store dependency.
+
+### Question execution
+
+1. Jev `Choice` routes the message to `sql`, `conversation`, or `unsupported`, using the latest message and six recent conversation turns as structured state.
+2. Conversation messages receive a concise response without a database call. Unsupported or mutating requests receive a bounded refusal without SQL.
+3. Only the SQL route asks GPT-4o Mini for one schema-constrained query. Server validation permits a single `SELECT`/CTE over the reporting allowlist and requires the active Gmail-account placeholder.
+4. A private Supabase function applies a five-second timeout, caps output at 200 rows, and rejects mutation keywords, comments, system schemas, raw email storage, and browser access.
+5. A second model call converts only the returned rows into concise text. The redesigned chat shows the Jev route, tool use, generated SQL, and result status.
+
+### Evaluation set
+
+Keep a small regression suite for SQL safety and representative count, grouping, date, status, and action questions. This phase intentionally avoids a larger RAG evaluation investment.
+
+### Phase 13B acceptance criteria
+
+- [x] Jev keeps greetings and ordinary conversation out of the SQL path while routing mailbox facts to it.
+- [x] AI Chat converts a mailbox-data question to SQL and returns a database-grounded answer.
+- [x] Every query is account-scoped and limited to approved reporting relations.
+- [x] Mutation, multiple-statement, system-schema, and raw-email access are rejected in both server code and SQL.
+- [x] The assistant has no send, delete, relabel, correction, merge, or draft-save path.
+- [x] Generated SQL is visible to the user for inspection.
 
 ---
 
@@ -546,6 +610,8 @@ The duplicate dashboard plan and superseded labeling UI/server were removed afte
 1. Review the targeted AI queue and confirm or reject recommendations; do not silently promote LLM output to ground truth.
 2. Run `npm run ai:evaluate -- --limit=20` when API usage is acceptable, inspect the private report, and tune prompts only against development examples.
 3. Deploy the existing hourly automation with `npm run automate:once` or keep `npm run scheduler` alive under a process manager.
-4. Begin Phase 13 only after defining read-only query tools, account scoping, and evidence citations.
+4. Apply migration 010 and run a bounded company-resolution sample; review its employer, agency, platform, `none`, and uncertainty decisions before the full corpus.
+5. Promote no staged identity until a reviewed evaluation justifies its threshold and the old value/provenance can be retained.
+6. Use the completed NL-to-SQL AI Chat for simple database questions; do not add RAG or embeddings.
 
 For every phase: confirm scope, implement, run automated checks, verify acceptance criteria together, update this plan, and only then begin the next phase.
