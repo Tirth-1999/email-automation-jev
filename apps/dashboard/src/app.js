@@ -16,6 +16,15 @@ const boardSwitch = document.querySelector("#boardSwitch");
 const boardTabs = [...document.querySelectorAll("[data-board-mode]")];
 const aiSwitch = document.querySelector("#aiSwitch");
 const aiTabs = [...document.querySelectorAll("[data-ai-mode]")];
+const subnavHosts = {
+  labels: document.querySelector("#labLabelsNavHost"),
+  quality: document.querySelector("#labQualityNavHost"),
+  performance: document.querySelector("#labPerformanceNavHost"),
+  emails: document.querySelector("#boardEmailsNavHost"),
+  applications: document.querySelector("#boardApplicationsNavHost"),
+  brain: document.querySelector("#aiBrainNavHost"),
+  chat: document.querySelector("#aiChatNavHost"),
+};
 const reviewSidebar = document.querySelector("#reviewSidebar");
 const reviewReader = document.querySelector("#reviewReader");
 const reviewClassifier = document.querySelector("#reviewClassifier");
@@ -45,6 +54,9 @@ const commandClassifiedCount = document.querySelector("#commandClassifiedCount")
 const commandRunProgress = document.querySelector("#commandRunProgress");
 const commandRunProgressLabel = document.querySelector("#commandRunProgressLabel");
 const commandClassificationProgress = document.querySelector("#commandClassificationProgress");
+const commandClassificationScope = document.querySelector("#commandClassificationScope");
+const commandClassificationResultMode = document.querySelector("#commandClassificationResultMode");
+const commandClassificationPolicy = document.querySelector("#commandClassificationPolicy");
 const commandCorrectionCount = document.querySelector("#commandCorrectionCount");
 const syncNewEmails = document.querySelector("#syncNewEmails");
 const startCommandClassification = document.querySelector("#startCommandClassification");
@@ -55,6 +67,7 @@ const commandOutputState = document.querySelector("#commandOutputState");
 const commandBoardCount = document.querySelector("#commandBoardCount");
 const commandApplicationCount = document.querySelector("#commandApplicationCount");
 const refreshCommandOutputs = document.querySelector("#refreshCommandOutputs");
+const runCommandPipeline = document.querySelector("#runCommandPipeline");
 const commandOutputProgress = document.querySelector("#commandOutputProgress");
 const pipelineSteps = [...document.querySelectorAll("[data-pipeline-step]")];
 const pipelineDetails = [...document.querySelectorAll("[data-step-detail]")];
@@ -97,6 +110,11 @@ const battlegroundRunLabel = document.querySelector("#battlegroundRunLabel");
 const battlegroundResultCount = document.querySelector("#battlegroundResultCount");
 const battlegroundDecisionMap = document.querySelector("#battlegroundDecisionMap");
 const battlegroundDecisionCount = document.querySelector("#battlegroundDecisionCount");
+const battlegroundDecisionPool = document.querySelector("#battlegroundDecisionPool");
+const battlegroundCategoryHeatmap = document.querySelector("#battlegroundCategoryHeatmap");
+const battlegroundPoolTooltip = document.querySelector("#battlegroundPoolTooltip");
+const battlegroundHeatmapTooltip = document.querySelector("#battlegroundHeatmapTooltip");
+const battlegroundDecisionLegend = document.querySelector("#battlegroundDecisionLegend");
 const boardView = document.querySelector("#boardView");
 const boardList = document.querySelector("#boardList");
 const boardDetail = document.querySelector("#boardDetail");
@@ -135,6 +153,19 @@ const aiBrainMetrics = document.querySelector("#aiBrainMetrics");
 const aiBatchProgress = document.querySelector("#aiBatchProgress");
 const aiBatchStatus = document.querySelector("#aiBatchStatus");
 const runAiLane = document.querySelector("#runAiLane");
+const aiChatForm = document.querySelector("#aiChatForm");
+const aiChatInput = document.querySelector("#aiChatInput");
+const aiChatSend = document.querySelector("#aiChatSend");
+const aiChatMessages = document.querySelector("#aiChatMessages");
+const aiChatStatus = document.querySelector("#aiChatStatus");
+const aiChatRouteState = document.querySelector("#aiChatRouteState");
+const aiChatRecentList = document.querySelector("#aiChatRecentList");
+const aiChatArchivedList = document.querySelector("#aiChatArchivedList");
+const aiChatConversationTitle = document.querySelector("#aiChatConversationTitle");
+const aiChatConversationId = document.querySelector("#aiChatConversationId");
+const newAiChat = document.querySelector("#newAiChat");
+const closeAiChat = document.querySelector("#closeAiChat");
+const deleteAiChat = document.querySelector("#deleteAiChat");
 const replyDialog = document.querySelector("#replyDialog");
 const replyDialogTitle = document.querySelector("#replyDialogTitle");
 const replySourceMeta = document.querySelector("#replySourceMeta");
@@ -156,6 +187,9 @@ let noteSaveTimer;
 let benchmarkReport = null;
 let commandPollTimer;
 let battlegroundPollTimer;
+let latestBattlegroundReport = null;
+let battlegroundPoolHoverState = null;
+let battlegroundHeatmapHoverState = [];
 let boardEmails = [];
 let boardLaneState = {};
 let boardCurrentEmailId = null;
@@ -175,6 +209,11 @@ let aiCandidates = [];
 let aiCandidateTotal = 0;
 let currentAiEmailId = null;
 let aiBatchRunning = false;
+let aiChatHistory = [];
+let aiChatConversations = [];
+let aiChatConversationIdValue = null;
+let aiChatConversationArchived = false;
+let aiChatLoaded = false;
 let lastOutputCacheVersion = null;
 
 // Keep tab switches instant without allowing operational polling to go stale.
@@ -248,7 +287,8 @@ async function apiFetch(input, init = {}) {
 const categoryDescriptions = {
   applied: "Application received",
   outreach: "Outgoing message that initiates or follows up on a job conversation",
-  reply_needed: "Recruiter question, requested information, or right-to-represent response",
+  reply_needed: "A written recruiter response or right-to-represent confirmation is required",
+  information_needed: "Administrative form or missing application details, such as EEO or WOTC",
   interview_assessment: "Interview, test, or assessment",
   offer: "Offer or offer next step",
   rejected: "Explicit rejection",
@@ -256,7 +296,7 @@ const categoryDescriptions = {
   uncertain: "Not enough evidence",
 };
 
-const boardCategoryOrder = ["reply_needed", "interview_assessment", "offer", "applied", "outreach", "rejected", "other", "uncertain"];
+const boardCategoryOrder = ["reply_needed", "information_needed", "interview_assessment", "offer", "applied", "outreach", "rejected", "other", "uncertain"];
 const boardPageSize = 30;
 const applicationPageSize = 30;
 
@@ -284,6 +324,15 @@ function switchView(view, mode = null) {
   const aiBrainActive = aiActive && currentAiMode === "brain";
   const aiChatActive = aiActive && currentAiMode === "chat";
   const applicationsActive = applicationBoardActive && currentBoardMode === "applications";
+  if (labActive && subnavHosts[currentLabMode] && labSwitch.parentElement !== subnavHosts[currentLabMode]) {
+    subnavHosts[currentLabMode].append(labSwitch);
+  }
+  if (applicationBoardActive && subnavHosts[currentBoardMode] && boardSwitch.parentElement !== subnavHosts[currentBoardMode]) {
+    subnavHosts[currentBoardMode].append(boardSwitch);
+  }
+  if (aiActive && subnavHosts[currentAiMode] && aiSwitch.parentElement !== subnavHosts[currentAiMode]) {
+    subnavHosts[currentAiMode].append(aiSwitch);
+  }
   app.classList.toggle("benchmark-mode", !reviewActive);
   app.classList.toggle("lab-mode", labActive);
   app.classList.toggle("board-mode", applicationBoardActive);
@@ -340,6 +389,7 @@ function switchView(view, mode = null) {
   if (analyticsActive) void loadAnalytics();
   if (applicationsActive) void loadApplications();
   if (aiBrainActive) void loadAiReviews();
+  if (aiChatActive) void loadAiChatWorkspace();
 }
 
 function navigateToView(view) {
@@ -379,6 +429,266 @@ function navigateToAi(mode) {
   const hash = `#ai-${safeMode}`;
   if (window.location.hash !== hash) window.location.hash = hash;
   else switchView("ai", safeMode);
+}
+
+function appendAiChatMessage(role, text, sql = "", route = null) {
+  const message = element("article", `chat-message ${role}`);
+  if (route) {
+    const routeNames = { sql: "SQL lookup", conversation: "No tool", unsupported: "Outside scope" };
+    const badge = element("span", `chat-route-badge ${route.route}`, routeNames[route.route] || route.route);
+    const confidence = Number(route.confidence);
+    if (Number.isFinite(confidence)) badge.title = `Jev route confidence ${(confidence * 100).toFixed(1)}%`;
+    message.append(badge);
+  }
+  const content = element("div", "chat-message-content");
+  if (role.startsWith("assistant") && /^(Result summary|Answer|Results|Key findings|Coverage)$/m.test(text)) {
+    let list = null;
+    for (const rawLine of text.split("\n")) {
+      const line = rawLine.trim();
+      if (!line) {
+        list = null;
+        continue;
+      }
+      if (["Result summary", "Answer", "Results", "Key findings", "Coverage"].includes(line)) {
+        content.append(element("h4", "", line));
+        list = null;
+      } else if (line.startsWith("• ")) {
+        if (!list) {
+          list = document.createElement("ul");
+          content.append(list);
+        }
+        list.append(element("li", "", line.slice(2)));
+      } else {
+        content.append(element("p", "", line));
+        list = null;
+      }
+    }
+  } else {
+    content.append(element("p", "", text));
+  }
+  message.append(content);
+  if (sql) {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "View generated SQL";
+    const code = document.createElement("code");
+    code.textContent = sql;
+    details.append(summary, code);
+    message.append(details);
+  }
+  aiChatMessages.append(message);
+  aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
+  return message;
+}
+
+function renderAiChatWelcome() {
+  const welcome = element("section", "chat-welcome");
+  welcome.append(
+    element("div", "chat-welcome-icon", "J"),
+    element("h3", "", "What do you want to know?"),
+    element("p", "", "Ask naturally. I’ll query Supabase only when the answer actually depends on your mailbox."),
+  );
+  aiChatMessages.replaceChildren(welcome);
+}
+
+function setAiChatConversationState(conversation) {
+  aiChatConversationIdValue = conversation?.id || null;
+  aiChatConversationArchived = Boolean(conversation?.archived_at);
+  aiChatConversationTitle.textContent = conversation?.title || "New chat";
+  aiChatConversationId.textContent = conversation?.id
+    ? `Chat ${conversation.id.slice(0, 8)} · ${aiChatConversationArchived ? "closed" : "saved in Supabase"}`
+    : "Jev-routed · account scoped";
+  closeAiChat.disabled = !conversation || aiChatConversationArchived;
+  closeAiChat.textContent = aiChatConversationArchived ? "Closed" : "Close chat";
+  closeAiChat.hidden = aiChatConversationArchived;
+  deleteAiChat.hidden = !aiChatConversationArchived;
+  aiChatInput.disabled = aiChatConversationArchived;
+  aiChatSend.disabled = aiChatConversationArchived;
+  aiChatInput.placeholder = aiChatConversationArchived
+    ? "This chat is closed. Start a new chat to continue."
+    : "Ask about applications, interviews, companies, or outcomes…";
+}
+
+function renderAiChatConversationList(target, conversations, archived) {
+  target.replaceChildren();
+  if (!conversations.length) {
+    target.append(element("p", "", archived ? "No closed chats" : "No recent chats"));
+    return;
+  }
+  for (const conversation of conversations) {
+    const row = element("div", `chat-history-row${conversation.id === aiChatConversationIdValue ? " active" : ""}`);
+    const select = element("button", "chat-history-select");
+    select.type = "button";
+    select.append(
+      element("strong", "", conversation.title || "New chat"),
+      element("small", "", conversation.id.slice(0, 8)),
+    );
+    select.addEventListener("click", () => void selectAiChatConversation(conversation.id).catch((error) => {
+      aiChatStatus.textContent = error instanceof Error ? error.message : String(error);
+    }));
+    row.append(select);
+    if (!archived) {
+      const archive = element("button", "chat-history-close", "×");
+      archive.type = "button";
+      archive.title = "Close and archive chat";
+      archive.addEventListener("click", () => void archiveAiChatConversation(conversation.id).catch((error) => {
+        aiChatStatus.textContent = error instanceof Error ? error.message : String(error);
+      }));
+      row.append(archive);
+    } else {
+      const remove = element("button", "chat-history-delete", "Delete");
+      remove.type = "button";
+      remove.title = "Permanently delete chat";
+      remove.addEventListener("click", () => void deleteAiChatConversation(conversation.id, conversation.title).catch((error) => {
+        aiChatStatus.textContent = error instanceof Error ? error.message : String(error);
+      }));
+      row.append(remove);
+    }
+    target.append(row);
+  }
+}
+
+function renderAiChatConversationLists() {
+  renderAiChatConversationList(aiChatRecentList, aiChatConversations.filter((chat) => !chat.archived_at), false);
+  renderAiChatConversationList(aiChatArchivedList, aiChatConversations.filter((chat) => chat.archived_at), true);
+}
+
+async function refreshAiChatConversations() {
+  const response = await apiFetch("/api/ai/chats");
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `Could not load chats (${response.status})`);
+  aiChatConversations = Array.isArray(payload.conversations) ? payload.conversations : [];
+  renderAiChatConversationLists();
+  return aiChatConversations;
+}
+
+async function createNewAiChat() {
+  const response = await apiFetch("/api/ai/chats", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `Could not create chat (${response.status})`);
+  await refreshAiChatConversations();
+  await selectAiChatConversation(payload.conversation.id);
+  return payload.conversation;
+}
+
+async function selectAiChatConversation(conversationId) {
+  const response = await apiFetch(`/api/ai/chats/${encodeURIComponent(conversationId)}/messages`);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `Could not load chat (${response.status})`);
+  setAiChatConversationState(payload.conversation);
+  aiChatHistory = [];
+  aiChatMessages.replaceChildren();
+  for (const message of payload.messages || []) {
+    const route = message.route ? { route: message.route, confidence: message.route_confidence } : null;
+    appendAiChatMessage(message.role, message.content, message.generated_sql || "", route);
+    aiChatHistory.push({ role: message.role, text: message.content });
+  }
+  if (!payload.messages?.length) renderAiChatWelcome();
+  aiChatRouteState.textContent = aiChatConversationArchived ? "Closed" : "Ready";
+  aiChatRouteState.className = "chat-route-state";
+  aiChatStatus.textContent = aiChatConversationArchived
+    ? "Read-only history · start a new chat to continue"
+    : "Conversation history is saved in Supabase.";
+  renderAiChatConversationLists();
+}
+
+async function archiveAiChatConversation(conversationId) {
+  const response = await apiFetch(`/api/ai/chats/${encodeURIComponent(conversationId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ archived: true }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `Could not close chat (${response.status})`);
+  const wasCurrent = conversationId === aiChatConversationIdValue;
+  await refreshAiChatConversations();
+  if (wasCurrent) await createNewAiChat();
+}
+
+async function deleteAiChatConversation(conversationId, title = "this chat") {
+  if (!window.confirm(`Permanently delete “${title || "this chat"}” and its complete message history?`)) return;
+  const response = await apiFetch(`/api/ai/chats/${encodeURIComponent(conversationId)}`, { method: "DELETE" });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `Could not delete chat (${response.status})`);
+  const wasCurrent = conversationId === aiChatConversationIdValue;
+  const conversations = await refreshAiChatConversations();
+  if (wasCurrent) {
+    const active = conversations.find((conversation) => !conversation.archived_at);
+    if (active) await selectAiChatConversation(active.id);
+    else await createNewAiChat();
+  }
+}
+
+async function loadAiChatWorkspace() {
+  if (aiChatLoaded) return;
+  aiChatLoaded = true;
+  try {
+    const conversations = await refreshAiChatConversations();
+    const active = conversations.find((conversation) => !conversation.archived_at);
+    if (active) await selectAiChatConversation(active.id);
+    else await createNewAiChat();
+  } catch (error) {
+    aiChatLoaded = false;
+    aiChatStatus.textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function askAiChat(questionValue) {
+  const question = String(questionValue || aiChatInput.value).trim();
+  if (!question || aiChatSend.disabled) return;
+  if (!aiChatConversationIdValue) {
+    try {
+      aiChatStatus.textContent = "Creating a saved chat…";
+      await createNewAiChat();
+    } catch (error) {
+      aiChatRouteState.textContent = "Could not start";
+      aiChatRouteState.className = "chat-route-state unsupported";
+      aiChatStatus.textContent = error instanceof Error ? error.message : String(error);
+      return;
+    }
+  }
+  if (aiChatConversationArchived) return;
+  aiChatMessages.querySelector(".chat-welcome")?.remove();
+  appendAiChatMessage("user", question);
+  aiChatHistory.push({ role: "user", text: question });
+  aiChatInput.value = "";
+  aiChatSend.disabled = true;
+  aiChatInput.disabled = true;
+  aiChatRouteState.textContent = "Jev is routing";
+  aiChatRouteState.className = "chat-route-state routing";
+  aiChatStatus.textContent = "Understanding whether this needs mailbox data…";
+  const loading = appendAiChatMessage("assistant loading", "Thinking");
+  try {
+    const response = await apiFetch("/api/ai/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, conversation_id: aiChatConversationIdValue }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `AI Chat failed with status ${response.status}`);
+    loading.remove();
+    appendAiChatMessage("assistant", payload.answer, payload.sql, payload.route);
+    aiChatHistory.push({ role: "assistant", text: payload.answer });
+    aiChatConversationTitle.textContent = payload.conversation_title || aiChatConversationTitle.textContent;
+    aiChatConversationId.textContent = `Chat ${payload.conversation_id.slice(0, 8)} · saved in Supabase`;
+    await refreshAiChatConversations();
+    const routeName = payload.route?.route || "conversation";
+    aiChatRouteState.textContent = routeName === "sql" ? "SQL evidence" : routeName === "conversation" ? "No tool used" : "Outside scope";
+    aiChatRouteState.className = `chat-route-state ${routeName}`;
+    aiChatStatus.textContent = payload.tool_used
+      ? `${payload.row_count} SQL result row${payload.row_count === 1 ? "" : "s"} used · ${payload.model}`
+      : `Answered without querying Supabase · ${payload.model}`;
+  } catch (error) {
+    loading.remove();
+    appendAiChatMessage("assistant error", error instanceof Error ? error.message : String(error));
+    aiChatRouteState.textContent = "Could not complete";
+    aiChatRouteState.className = "chat-route-state unsupported";
+    aiChatStatus.textContent = "The request did not complete.";
+  } finally {
+    aiChatSend.disabled = false;
+    aiChatInput.disabled = false;
+    aiChatInput.focus();
+  }
 }
 
 function routeFromHash() {
@@ -437,79 +747,255 @@ function battlegroundMetric(label, value, detail) {
   battlegroundCards.append(card);
 }
 
-function renderBattlegroundDecisionMap(summary = []) {
-  battlegroundDecisionMap.replaceChildren();
+const decisionPoolColors = {
+  applied: "#31b76a",
+  reply_needed: "#f59e42",
+  information_needed: "#6366f1",
+  interview_assessment: "#20a4c7",
+  offer: "#087f5b",
+  outreach: "#8b6ee8",
+  rejected: "#e45b70",
+  other: "#8793a5",
+  uncertain: "#d6a522",
+  failed: "#c93d4f",
+  pending: "#e3e8ef",
+};
+
+function seededNumber(seed) {
+  let value = seed >>> 0;
+  return () => {
+    value += 0x6D2B79F5;
+    let mixed = value;
+    mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function stringSeed(value) {
+  let seed = 2166136261;
+  for (const character of String(value || "decision-pool")) {
+    seed ^= character.charCodeAt(0);
+    seed = Math.imul(seed, 16777619);
+  }
+  return seed >>> 0;
+}
+
+function partitionDecisionHeatmap(items, x, y, width, height, boxes = []) {
+  if (!items.length || width <= 0 || height <= 0) return boxes;
+  if (items.length === 1) {
+    boxes.push({ ...items[0], x, y, width, height });
+    return boxes;
+  }
+  const total = items.reduce((sum, item) => sum + item.count, 0);
+  let running = 0;
+  let splitIndex = 1;
+  let closest = Number.POSITIVE_INFINITY;
+  for (let index = 1; index < items.length; index += 1) {
+    running += items[index - 1].count;
+    const distance = Math.abs(total / 2 - running);
+    if (distance < closest) {
+      closest = distance;
+      splitIndex = index;
+    }
+  }
+  const first = items.slice(0, splitIndex);
+  const second = items.slice(splitIndex);
+  const firstTotal = first.reduce((sum, item) => sum + item.count, 0);
+  const ratio = total ? firstTotal / total : 0.5;
+  if (width >= height) {
+    const firstWidth = width * ratio;
+    partitionDecisionHeatmap(first, x, y, firstWidth, height, boxes);
+    partitionDecisionHeatmap(second, x + firstWidth, y, width - firstWidth, height, boxes);
+  } else {
+    const firstHeight = height * ratio;
+    partitionDecisionHeatmap(first, x, y, width, firstHeight, boxes);
+    partitionDecisionHeatmap(second, x, y + firstHeight, width, height - firstHeight, boxes);
+  }
+  return boxes;
+}
+
+function renderBattlegroundDecisionMap(report = null) {
+  const summary = report?.decision_summary || [];
   const visibleSummary = summary
     .filter((item) => Number(item.count || 0) > 0)
     .sort((left, right) => Number(right.count || 0) - Number(left.count || 0));
-  const total = visibleSummary.reduce((sum, item) => sum + Number(item.count || 0), 0);
-  battlegroundDecisionCount.textContent = `${total.toLocaleString()} outcomes`;
-  if (!visibleSummary.length) {
-    const empty = document.createElement("p");
-    empty.className = "decision-map-empty";
-    empty.textContent = "Decisions will appear here as Jev completes each wave.";
-    battlegroundDecisionMap.append(empty);
+  const completed = visibleSummary.reduce((sum, item) => sum + Number(item.count || 0), 0);
+  const selected = Math.max(completed, Number(report?.selected_count || report?.config?.sampleSize || 0));
+  battlegroundDecisionCount.textContent = selected
+    ? `${completed.toLocaleString()} / ${selected.toLocaleString()} classified`
+    : "0 decisions";
+  battlegroundDecisionMap.classList.toggle("is-running", ["queued", "running"].includes(report?.status));
+  const empty = battlegroundDecisionMap.querySelector(".decision-map-empty");
+  empty.hidden = visibleSummary.length > 0;
+  battlegroundDecisionLegend.replaceChildren();
+
+  const heatmapItems = [];
+  for (const item of visibleSummary) {
+    heatmapItems.push({ category: item.category, count: Number(item.count || 0) });
+    const key = document.createElement("span");
+    key.className = "decision-pool-key";
+    key.style.setProperty("--decision-color", decisionPoolColors[item.category] || decisionPoolColors.other);
+    key.innerHTML = `<i></i>${displayCategory(item.category)} ${Number(item.count || 0).toLocaleString()}`;
+    battlegroundDecisionLegend.append(key);
+  }
+  if (selected > completed) {
+    heatmapItems.push({ category: "pending", count: selected - completed });
+    const key = document.createElement("span");
+    key.className = "decision-pool-key";
+    key.style.setProperty("--decision-color", decisionPoolColors.pending);
+    key.innerHTML = `<i></i>Waiting ${(selected - completed).toLocaleString()}`;
+    battlegroundDecisionLegend.append(key);
+  }
+
+  const pool = [];
+  const cellCount = Math.min(6_000, selected);
+  let represented = 0;
+  heatmapItems.forEach((item, index) => {
+    const count = index === heatmapItems.length - 1
+      ? Math.max(0, cellCount - represented)
+      : Math.min(cellCount - represented, selected ? Math.round((item.count / selected) * cellCount) : 0);
+    represented += count;
+    for (let itemIndex = 0; itemIndex < count; itemIndex += 1) pool.push(item.category);
+  });
+  const random = seededNumber(stringSeed(report?.id));
+  for (let index = pool.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [pool[index], pool[swapIndex]] = [pool[swapIndex], pool[index]];
+  }
+
+  const bounds = battlegroundDecisionMap.getBoundingClientRect();
+  const width = Math.max(320, Math.round(bounds.width || 480));
+  const height = Math.max(150, Math.round(bounds.height || 180));
+  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  battlegroundDecisionPool.width = width * ratio;
+  battlegroundDecisionPool.height = height * ratio;
+  const context = battlegroundDecisionPool.getContext("2d");
+  context.scale(ratio, ratio);
+  context.clearRect(0, 0, width, height);
+  battlegroundPoolHoverState = null;
+  if (pool.length) {
+    const columns = Math.ceil(Math.sqrt(pool.length * (width / height)));
+    const rows = Math.ceil(pool.length / columns);
+    const cellWidth = width / columns;
+    const cellHeight = height / rows;
+    battlegroundPoolHoverState = { pool, columns, rows, cellWidth, cellHeight, width, height };
+    const gap = pool.length > 3_000 ? 0.7 : 1.1;
+    pool.forEach((category, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      context.globalAlpha = category === "pending" ? 0.58 : 0.94;
+      context.fillStyle = decisionPoolColors[category] || decisionPoolColors.other;
+      context.fillRect(
+        column * cellWidth + gap / 2,
+        row * cellHeight + gap / 2,
+        Math.max(0.8, cellWidth - gap),
+        Math.max(0.8, cellHeight - gap),
+      );
+    });
+  }
+  context.globalAlpha = 1;
+
+  const heatmapBounds = battlegroundCategoryHeatmap.getBoundingClientRect();
+  const heatmapWidth = Math.max(240, Math.round(heatmapBounds.width || 320));
+  const heatmapHeight = Math.max(150, Math.round(heatmapBounds.height || height));
+  battlegroundCategoryHeatmap.width = heatmapWidth * ratio;
+  battlegroundCategoryHeatmap.height = heatmapHeight * ratio;
+  const heatmapContext = battlegroundCategoryHeatmap.getContext("2d");
+  heatmapContext.scale(ratio, ratio);
+  heatmapContext.clearRect(0, 0, heatmapWidth, heatmapHeight);
+  battlegroundHeatmapHoverState = [];
+  if (!heatmapItems.length) return;
+  const boxes = partitionDecisionHeatmap(heatmapItems, 0, 0, heatmapWidth, heatmapHeight);
+  battlegroundHeatmapHoverState = boxes.map((box) => ({ ...box, selected, heatmapWidth, heatmapHeight }));
+  for (const box of boxes) {
+    const gap = 3;
+    const boxX = box.x + gap / 2;
+    const boxY = box.y + gap / 2;
+    const boxWidth = Math.max(0, box.width - gap);
+    const boxHeight = Math.max(0, box.height - gap);
+    const color = decisionPoolColors[box.category] || decisionPoolColors.other;
+    const gradient = heatmapContext.createLinearGradient(boxX, boxY, boxX + boxWidth, boxY + boxHeight);
+    gradient.addColorStop(0, color);
+    gradient.addColorStop(1, `${color}cc`);
+    heatmapContext.globalAlpha = box.category === "pending" ? 0.62 : 0.94;
+    heatmapContext.fillStyle = gradient;
+    heatmapContext.beginPath();
+    heatmapContext.roundRect(boxX, boxY, boxWidth, boxHeight, Math.min(10, boxWidth / 8, boxHeight / 8));
+    heatmapContext.fill();
+    if (boxWidth < 68 || boxHeight < 38) continue;
+    heatmapContext.save();
+    heatmapContext.beginPath();
+    heatmapContext.rect(boxX + 8, boxY + 8, Math.max(0, boxWidth - 16), Math.max(0, boxHeight - 16));
+    heatmapContext.clip();
+    heatmapContext.globalAlpha = 1;
+    heatmapContext.fillStyle = box.category === "pending" ? "#465269" : "white";
+    heatmapContext.font = "800 10px Inter, sans-serif";
+    heatmapContext.fillText(displayCategory(box.category).toUpperCase(), boxX + 10, boxY + 20);
+    heatmapContext.font = `800 ${boxWidth > 140 && boxHeight > 85 ? 25 : 18}px Inter, sans-serif`;
+    heatmapContext.fillText(box.count.toLocaleString(), boxX + 10, boxY + (boxHeight > 72 ? 50 : 41));
+    if (boxWidth > 120 && boxHeight > 82) {
+      heatmapContext.font = "600 9px Inter, sans-serif";
+      heatmapContext.globalAlpha = 0.88;
+      heatmapContext.fillText(`${selected ? ((box.count / selected) * 100).toFixed(1) : "0.0"}% of outcomes`, boxX + 10, boxY + 67);
+    }
+    heatmapContext.restore();
+  }
+  heatmapContext.globalAlpha = 1;
+}
+
+function showCanvasTooltip(event, tooltip, category, detail) {
+  const host = tooltip.parentElement;
+  const bounds = host.getBoundingClientRect();
+  tooltip.style.setProperty("--tooltip-color", decisionPoolColors[category] || decisionPoolColors.other);
+  tooltip.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = displayCategory(category);
+  const copy = document.createElement("span");
+  copy.textContent = detail;
+  tooltip.append(title, copy);
+  tooltip.hidden = false;
+  const left = Math.min(bounds.width - tooltip.offsetWidth - 8, Math.max(8, event.clientX - bounds.left + 12));
+  const top = Math.min(bounds.height - tooltip.offsetHeight - 8, Math.max(8, event.clientY - bounds.top - tooltip.offsetHeight - 12));
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+}
+
+function handleDecisionPoolHover(event) {
+  const state = battlegroundPoolHoverState;
+  if (!state) {
+    battlegroundPoolTooltip.hidden = true;
     return;
   }
-
-  const mapWidth = Math.max(320, battlegroundDecisionMap.clientWidth || 480);
-  const mapHeight = Math.max(160, battlegroundDecisionMap.clientHeight || 180);
-  const root = window.d3?.hierarchy && window.d3?.treemap
-    ? window.d3.hierarchy({ children: visibleSummary })
-      .sum((item) => Number(item.count || 0))
-      .sort((left, right) => right.value - left.value)
-    : null;
-  if (root) {
-    window.d3.treemap()
-      .tile(window.d3.treemapSquarify.ratio(1.25))
-      .size([mapWidth, mapHeight])
-      .paddingInner(0)
-      .round(true)(root);
+  const bounds = battlegroundDecisionPool.getBoundingClientRect();
+  const x = (event.clientX - bounds.left) * (state.width / bounds.width);
+  const y = (event.clientY - bounds.top) * (state.height / bounds.height);
+  const column = Math.min(state.columns - 1, Math.max(0, Math.floor(x / state.cellWidth)));
+  const row = Math.min(state.rows - 1, Math.max(0, Math.floor(y / state.cellHeight)));
+  const index = row * state.columns + column;
+  const category = state.pool[index];
+  if (!category) {
+    battlegroundPoolTooltip.hidden = true;
+    return;
   }
-  const leaves = root?.leaves() || visibleSummary.map((item, index) => ({
-    data: item,
-    x0: (index / visibleSummary.length) * mapWidth,
-    x1: ((index + 1) / visibleSummary.length) * mapWidth,
-    y0: 0,
-    y1: mapHeight,
-  }));
+  showCanvasTooltip(event, battlegroundPoolTooltip, category, `Selected email ${index + 1} of ${state.pool.length.toLocaleString()}`);
+}
 
-  for (const leaf of leaves) {
-    const item = leaf.data;
-    const count = Number(item.count || 0);
-    const confidence = typeof item.average_confidence === "number" ? item.average_confidence : null;
-    const tile = document.createElement("article");
-    const confidenceBand = confidence === null ? "" : confidence < 0.6 ? " low" : confidence < 0.8 ? " medium" : " high";
-    tile.className = `decision-map-tile${item.category === "failed" ? " failed" : confidenceBand}`;
-    const tileWidth = Math.max(0, leaf.x1 - leaf.x0);
-    const tileHeight = Math.max(0, leaf.y1 - leaf.y0);
-    tile.classList.toggle("compact", tileWidth < 150 || tileHeight < 92);
-    tile.classList.toggle("micro", tileWidth < 90 || tileHeight < 58);
-    tile.style.left = `${(leaf.x0 / mapWidth) * 100}%`;
-    tile.style.top = `${(leaf.y0 / mapHeight) * 100}%`;
-    tile.style.width = `${(tileWidth / mapWidth) * 100}%`;
-    tile.style.height = `${(tileHeight / mapHeight) * 100}%`;
-    tile.title = item.category === "failed"
-      ? `${count.toLocaleString()} requests failed or were rate-limited`
-      : `${count.toLocaleString()} ${displayCategory(item.category)} decisions · ${displayPercent(confidence)} average confidence`;
-
-    const label = document.createElement("span");
-    label.textContent = item.category === "failed" ? "Failed / rate-limited" : displayCategory(item.category);
-    const value = document.createElement("strong");
-    value.textContent = count.toLocaleString();
-    const share = document.createElement("small");
-    share.textContent = `${displayPercent(total ? count / total : 0)} of outcomes`;
-    const confidenceLine = document.createElement("small");
-    confidenceLine.className = "decision-map-confidence";
-    confidenceLine.textContent = confidence === null
-      ? "No confidence returned"
-      : `${displayPercent(confidence)} avg · H ${item.high_confidence_count} · M ${item.medium_confidence_count} · L ${item.low_confidence_count}`;
-    tile.append(label, value, share, confidenceLine);
-    battlegroundDecisionMap.append(tile);
+function handleCategoryHeatmapHover(event) {
+  const bounds = battlegroundCategoryHeatmap.getBoundingClientRect();
+  const x = (event.clientX - bounds.left) * ((battlegroundHeatmapHoverState[0]?.heatmapWidth || bounds.width) / bounds.width);
+  const y = (event.clientY - bounds.top) * ((battlegroundHeatmapHoverState[0]?.heatmapHeight || bounds.height) / bounds.height);
+  const box = battlegroundHeatmapHoverState.find((item) => x >= item.x && x <= item.x + item.width && y >= item.y && y <= item.y + item.height);
+  if (!box) {
+    battlegroundHeatmapTooltip.hidden = true;
+    return;
   }
+  const percentage = box.selected ? ((box.count / box.selected) * 100).toFixed(1) : "0.0";
+  showCanvasTooltip(event, battlegroundHeatmapTooltip, box.category, `${box.count.toLocaleString()} emails · ${percentage}% of outcomes`);
 }
 
 function renderBattleground(report) {
+  latestBattlegroundReport = report;
   battlegroundCards.replaceChildren();
   battlegroundRows.replaceChildren();
   if (!report) {
@@ -532,28 +1018,30 @@ function renderBattleground(report) {
   battlegroundStatus.classList.toggle("error", report.status === "failed");
   battlegroundStatus.textContent = report.error || (
     report.status === "running" || report.status === "queued"
-      ? `Classifying ${completed}/${selected || report.config.sampleSize} — no artificial request delay is active.`
-      : `Completed ${report.succeeded_count} successfully with ${report.failed_count} failures.`
+      ? `Classifying ${completed}/${selected || report.config.sampleSize}.`
+      : ""
   );
-  renderBattlegroundDecisionMap(report.decision_summary || []);
+  renderBattlegroundDecisionMap(report);
 
   const metrics = report.metrics;
-  if (metrics) {
-    const successRate = Number.isFinite(metrics.success_rate)
-      ? metrics.success_rate
-      : completed ? Number(report.succeeded_count || 0) / completed : 0;
-    const successfulRate = Number.isFinite(metrics.successful_throughput_per_second)
-      ? metrics.successful_throughput_per_second
-      : metrics.throughput_per_second;
-    battlegroundMetric("Wall clock", formatMilliseconds(metrics.wall_ms), `Selection ${formatMilliseconds(metrics.selection_ms)} · bulk load ${formatMilliseconds(metrics.email_load_ms)}`);
-    battlegroundMetric("Observed rate", `${metrics.throughput_per_second.toFixed(2)}/sec`, `${successfulRate.toFixed(2)}/sec successful · wave ${formatMilliseconds(metrics.classification_ms)}`);
-    battlegroundMetric("Success rate", displayPercent(successRate), `${metrics.rate_limited_count || 0} HTTP 429 rate limits`);
-    battlegroundMetric("Completed", completed.toLocaleString(), `of ${selected.toLocaleString()} selected · ${Number(report.failed_count || 0).toLocaleString()} failed`);
-    battlegroundMetric("Average Jev", formatMilliseconds(metrics.average_jev_ms), `p50 ${formatMilliseconds(metrics.p50_jev_ms)} · p95 ${formatMilliseconds(metrics.p95_jev_ms)}`);
-    battlegroundMetric("App overhead", formatMilliseconds(metrics.average_application_overhead_ms), "Bulk DB load amortized + local processing");
-    battlegroundMetric("Full mailbox estimate", formatDuration(metrics.projected_mailbox_seconds), `${report.active_mailbox_count.toLocaleString()} active emails at this observed rate`);
-    battlegroundMetric("Input tokens", metrics.total_input_tokens.toLocaleString(), "Across completed Jev calls");
-  }
+  const liveElapsedMs = report.started_at
+    ? Math.max(0, Date.parse(report.finished_at || new Date().toISOString()) - Date.parse(report.started_at))
+    : 0;
+  const elapsedMs = Number(metrics?.wall_ms || liveElapsedMs);
+  const liveRate = elapsedMs > 0 ? completed / (elapsedMs / 1_000) : 0;
+  const successRate = completed
+    ? Number(report.succeeded_count || 0) / completed
+    : Number(metrics?.success_rate || 0);
+  const throughput = Number(metrics?.throughput_per_second || liveRate);
+  const successfulRate = Number(metrics?.successful_throughput_per_second || throughput * successRate);
+  const totalInputTokens = Number(metrics?.total_input_tokens || (report.results || []).reduce((sum, result) => sum + Number(result.input_tokens || 0), 0));
+  const estimatedCost = totalInputTokens * 0.042 / 1_000_000;
+  battlegroundMetric("Emails read", `${completed.toLocaleString()} / ${selected.toLocaleString()}`, `${Math.max(0, selected - completed).toLocaleString()} still in the pool`);
+  battlegroundMetric("Decisions written", Number(report.succeeded_count || 0).toLocaleString(), `${Number(report.failed_count || 0).toLocaleString()} failed`);
+  battlegroundMetric("Success rate", displayPercent(successRate), `${metrics?.rate_limited_count || 0} HTTP 429 rate limits`);
+  battlegroundMetric("Emails / sec", throughput.toFixed(0), `${successfulRate.toFixed(0)}/sec successful`);
+  battlegroundMetric("Elapsed", formatMilliseconds(elapsedMs), metrics ? `p50 ${formatMilliseconds(metrics.p50_jev_ms)} · p95 ${formatMilliseconds(metrics.p95_jev_ms)}` : "Live wall-clock time");
+  battlegroundMetric("Estimated cost", `$${estimatedCost < 0.01 ? estimatedCost.toFixed(4) : estimatedCost.toFixed(2)}`, `${totalInputTokens.toLocaleString()} input tokens · $0.042/MTok`);
 
   for (const row of report.results || []) {
     const tr = document.createElement("tr");
@@ -614,7 +1102,7 @@ async function startBattleground(event) {
         sample_size: Number(document.querySelector("#battlegroundSample").value),
         concurrency: Number(document.querySelector("#battlegroundConcurrency").value),
         minimum_top_probability: Number(document.querySelector("#battlegroundThreshold").value),
-        max_retries: Number(document.querySelector("#battlegroundRetries").value),
+        max_retries: 0,
       }),
     });
     const payload = await response.json();
@@ -994,6 +1482,7 @@ const analyticsPalette = {
   applied: "#315efb",
   outreach: "#7c3aed",
   reply_needed: "#ea580c",
+  information_needed: "#6366f1",
   interview_assessment: "#0891b2",
   offer: "#16a34a",
   rejected: "#dc2626",
@@ -1262,7 +1751,7 @@ function renderAnalyticsNarrative(snapshot) {
   const lifecycle = snapshot.application_lifecycle;
   const statuses = new Map((lifecycle?.status_breakdown || []).map((item) => [item.status, item.count]));
   const totalApplications = Number(lifecycle?.application_count || 0);
-  const activeProgress = Number(statuses.get("reply_needed") || 0) + Number(statuses.get("interview_assessment") || 0) + Number(statuses.get("offer") || 0);
+  const activeProgress = Number(statuses.get("reply_needed") || 0) + Number(statuses.get("information_needed") || 0) + Number(statuses.get("interview_assessment") || 0) + Number(statuses.get("offer") || 0);
   const cards = [
     {
       icon: "◎",
@@ -1354,12 +1843,13 @@ function renderLifecycleSankey(lifecycle) {
   }
   lifecycleSankey.hidden = false;
   empty.hidden = true;
-  const statusOrder = ["outreach", "applied", "reply_needed", "interview_assessment", "offer", "rejected", "ghosted"];
+  const statusOrder = ["outreach", "applied", "reply_needed", "information_needed", "interview_assessment", "offer", "rejected", "ghosted"];
   const labels = {
     all_applications: "All applications",
     outreach: "Outreach",
     applied: "Applied",
     reply_needed: "Reply needed",
+    information_needed: "Information needed",
     interview_assessment: "Interview / assessment",
     offer: "Offer",
     rejected: "Rejected",
@@ -1481,7 +1971,7 @@ async function loadAnalytics() {
   }
 }
 
-const applicationStatuses = ["reply_needed", "interview_assessment", "offer", "applied", "outreach", "rejected", "ghosted"];
+const applicationStatuses = ["reply_needed", "information_needed", "interview_assessment", "offer", "applied", "outreach", "rejected", "ghosted"];
 
 function applicationCard(application) {
   const card = element("article", "application-card");
@@ -1930,7 +2420,7 @@ function renderAiReviewQueue() {
   const visible = [...laneAiCandidates()].sort((left, right) => reviewPriority(right) - reviewPriority(left));
   aiReviewCount.textContent = `${visible.length.toLocaleString()} ${displayCategory(aiLaneSelect.value)} candidates`;
   aiLaneSummary.replaceChildren();
-  for (const category of ["reply_needed", "interview_assessment", "offer"]) {
+  for (const category of ["reply_needed", "information_needed", "interview_assessment", "offer"]) {
     const rows = aiCandidates.filter((candidate) => candidate.effective_category === category);
     const reviewed = rows.filter((candidate) => candidate.llm_reviewed_at).length;
     const summary = element("button", `ai-lane-card category-${category}${aiLaneSelect.value === category ? " active" : ""}`);
@@ -2191,8 +2681,10 @@ async function loadBenchmark() {
 }
 
 function commandPayload() {
+  const fullMailbox = commandClassificationScope.value === "all";
   return {
-    scope: "unclassified",
+    scope: fullMailbox ? "all" : "unclassified",
+    replace_existing: fullMailbox && commandClassificationResultMode.value === "replace",
     maximum: null,
     after: null,
     before: null,
@@ -2200,6 +2692,18 @@ function commandPayload() {
     concurrency: 5,
     batch_size: 25,
   };
+}
+
+function syncCommandClassificationOptions() {
+  const fullMailbox = commandClassificationScope.value === "all";
+  commandClassificationResultMode.disabled = !fullMailbox;
+  if (!fullMailbox) commandClassificationResultMode.value = "preserve";
+  commandClassificationPolicy.textContent = !fullMailbox
+    ? "Existing classifications and corrections stay unchanged."
+    : commandClassificationResultMode.value === "replace"
+      ? "Fresh rebuild: old runs, classifications, and manual/AI overrides are cleared first. Drafts and stars remain."
+      : "Every email is classified again; earlier runs remain auditable and current corrections stay active.";
+  if (latestCommandSnapshot) renderCommandPipeline(latestCommandSnapshot);
 }
 
 function selectPipelineStep(step) {
@@ -2281,7 +2785,7 @@ function renderPipelineDetail(snapshot) {
   });
 
   const outputBlocked = ingestion?.status === "queued" || ingestion?.status === "running" || Boolean(activeRun) || Number(mailbox.unclassified_emails || 0) > 0;
-  const progress = outputBlocked ? 0 : Number(outputs?.progress_percent ?? (Number(mailbox.application_count || 0) > 0 ? 100 : 0));
+  const progress = outputBlocked ? 0 : Number(outputs?.progress_percent ?? 0);
   const outputStageMap = {
     queued: "classified",
     loading_classifications: "classified",
@@ -2292,13 +2796,13 @@ function renderPipelineDetail(snapshot) {
     building_analytics: "analytics",
     complete: "analytics",
   };
-  const activeOutputStage = outputStageMap[outputs?.stage || "complete"];
+  const activeOutputStage = outputs ? outputStageMap[outputs.stage || "queued"] : null;
   const outputOrder = ["classified", "board", "applications", "analytics"];
   const activeOutputIndex = outputOrder.indexOf(activeOutputStage);
   document.querySelectorAll("[data-output-stage]").forEach((node) => {
     const nodeIndex = outputOrder.indexOf(node.dataset.outputStage);
     node.classList.toggle("is-stage-active", !outputBlocked && (outputs?.status === "queued" || outputs?.status === "running") ? node.dataset.outputStage === activeOutputStage : false);
-    node.classList.toggle("is-stage-complete", !outputBlocked && (outputs?.status === "succeeded" || (!outputs && progress === 100) || (activeOutputIndex >= 0 && nodeIndex < activeOutputIndex)));
+    node.classList.toggle("is-stage-complete", !outputBlocked && Boolean(outputs) && (outputs?.status === "succeeded" || (activeOutputIndex >= 0 && nodeIndex < activeOutputIndex)));
   });
   flowOutputStage.textContent = displayCategory(outputBlocked ? "waiting" : outputs?.stage || (progress === 100 ? "complete" : "waiting"));
   flowOutputPercent.textContent = `${Math.round(progress)}%`;
@@ -2322,6 +2826,7 @@ function renderCommandPipeline(snapshot) {
   const automation = snapshot.automation || {};
   const ingestion = snapshot.ingestion;
   const outputs = snapshot.outputs;
+  const pipeline = snapshot.pipeline;
   if (outputs?.status === "succeeded" && outputs.finished_at && outputs.finished_at !== lastOutputCacheVersion) {
     lastOutputCacheVersion = outputs.finished_at;
     invalidateApiCache();
@@ -2336,6 +2841,18 @@ function renderCommandPipeline(snapshot) {
   const ingestionStatus = ingestion?.status || latestSync?.status || null;
   const ingestionRunning = ingestionStatus === "queued" || ingestionStatus === "running";
   const classificationRunning = Boolean(activeRun);
+  const manualPipelineRunning = pipeline?.status === "queued" || pipeline?.status === "running";
+  const activePipelineStep = {
+    queued: "ingestion",
+    ingestion: "ingestion",
+    classification: "classification",
+    publication: "outputs",
+  }[pipeline?.stage];
+  if (manualPipelineRunning && activePipelineStep && selectedPipelineStep !== activePipelineStep) {
+    selectPipelineStep(activePipelineStep);
+  } else if (!manualPipelineRunning && (outputs?.status === "queued" || outputs?.status === "running") && selectedPipelineStep !== "outputs") {
+    selectPipelineStep("outputs");
+  }
 
   automationHealth.className = `automation-health ${automation.last_automation_status || (automation.migration_ready ? "ready" : "unavailable")}`;
   if (!automation.migration_ready) {
@@ -2405,31 +2922,76 @@ function renderCommandPipeline(snapshot) {
   setPipelineStepState(classificationStep, commandClassificationState, classificationStatus);
 
   const outputWaiting = ingestionRunning || classificationRunning || unclassifiedCount > 0;
-  const outputStatus = outputWaiting ? null : outputs?.status || (Number(mailbox.application_count || 0) > 0 ? "succeeded" : null);
+  const outputStatus = outputWaiting ? null : outputs?.status || null;
   setPipelineStepState(outputStep, commandOutputState, outputStatus);
   const outputPercent = outputWaiting ? 0 : Number(outputs?.progress_percent ?? (outputStatus === "succeeded" ? 100 : outputStatus === "queued" ? 5 : 0));
   commandOutputProgress.style.width = `${Math.max(0, Math.min(100, outputPercent))}%`;
 
   const automationRunning = automation.last_automation_status === "running" && automation.pipeline_lock_id;
-  syncNewEmails.disabled = ingestionRunning || classificationRunning || automationRunning;
+  syncNewEmails.disabled = ingestionRunning || classificationRunning || automationRunning || manualPipelineRunning;
   syncNewEmails.textContent = ingestionRunning ? "Syncing Gmail…" : "Sync new emails";
-  startCommandClassification.disabled = ingestionRunning || classificationRunning || automationRunning || Number(mailbox.unclassified_emails || 0) === 0;
+  const fullMailboxRun = commandClassificationScope.value === "all";
+  const replaceExisting = fullMailboxRun && commandClassificationResultMode.value === "replace";
+  const selectedEmailCount = fullMailboxRun
+    ? Number(mailbox.active_emails || 0)
+    : Number(mailbox.unclassified_emails || 0);
+  const classificationControlsLocked = ingestionRunning || classificationRunning || automationRunning || manualPipelineRunning;
+  commandClassificationScope.disabled = classificationControlsLocked;
+  commandClassificationResultMode.disabled = classificationControlsLocked || !fullMailboxRun;
+  commandClassificationPolicy.textContent = !fullMailboxRun
+    ? "Existing classifications and corrections stay unchanged."
+    : replaceExisting
+      ? "Fresh rebuild: old runs, classifications, and manual/AI overrides are cleared first. Drafts and stars remain."
+      : "Every email is classified again; earlier runs remain auditable and current corrections stay active.";
+  startCommandClassification.disabled = classificationControlsLocked || selectedEmailCount === 0;
   startCommandClassification.textContent = classificationRunning
     ? "Jev classification running…"
-    : Number(mailbox.unclassified_emails || 0) === 0
+    : selectedEmailCount === 0
       ? "Everything is classified"
-      : `Classify ${Number(mailbox.unclassified_emails || 0).toLocaleString()} emails`;
+      : fullMailboxRun
+        ? `${replaceExisting ? "Replace" : "Reclassify"} ${selectedEmailCount.toLocaleString()} emails`
+        : `Classify ${selectedEmailCount.toLocaleString()} new emails`;
   const outputRunning = outputs?.status === "queued" || outputs?.status === "running";
-  refreshCommandOutputs.disabled = ingestionRunning || classificationRunning || automationRunning || unclassifiedCount > 0 || outputRunning || Number(mailbox.classified_emails || 0) === 0;
+  refreshCommandOutputs.disabled = ingestionRunning || classificationRunning || automationRunning || manualPipelineRunning || unclassifiedCount > 0 || outputRunning || Number(mailbox.classified_emails || 0) === 0;
   refreshCommandOutputs.textContent = outputRunning ? "Publishing outputs…" : "Publish latest results";
+  runCommandPipeline.disabled = manualPipelineRunning || ingestionRunning || classificationRunning || outputRunning || automationRunning;
+  runCommandPipeline.textContent = manualPipelineRunning ? "Pipeline running…" : "Run pipeline";
   if (outputs?.status === "failed" && outputs.error) {
     commandStatus.textContent = `Output refresh failed: ${outputs.error}`;
     commandStatus.classList.add("error");
+  } else if (pipeline?.status === "failed") {
+    commandStatus.textContent = `Pipeline failed: ${pipeline.error || "Unknown pipeline error"}`;
+    commandStatus.classList.add("error");
+  } else if (pipeline?.status === "succeeded") {
+    commandStatus.classList.remove("error");
+    commandStatus.textContent = "Sync, Jev classification, and output publication completed successfully.";
   } else if (outputs?.status === "succeeded" && outputs.result) {
     commandStatus.classList.remove("error");
     commandStatus.textContent = `Published ${Number(outputs.result.classified_email_count || 0).toLocaleString()} classified emails into ${Number(outputs.result.application_count || 0).toLocaleString()} applications. Email Board and Analytics now use this result set.`;
   }
   renderPipelineDetail(snapshot);
+}
+
+async function startFullCommandPipeline() {
+  selectPipelineStep("ingestion");
+  commandStatus.classList.remove("error");
+  commandStatus.textContent = "Starting Sync → Jev → Publish pipeline…";
+  runCommandPipeline.disabled = true;
+  try {
+    const response = await apiFetch("/api/command/pipeline", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not start the pipeline");
+    if (latestCommandSnapshot) {
+      latestCommandSnapshot.pipeline = result.pipeline;
+      renderCommandPipeline(latestCommandSnapshot);
+    }
+    commandStatus.textContent = "The full pipeline is running. This view follows its active step automatically.";
+  } catch (error) {
+    commandStatus.textContent = error instanceof Error ? error.message : String(error);
+    commandStatus.classList.add("error");
+  } finally {
+    await loadCommandRuns();
+  }
 }
 
 async function publishCommandOutputs() {
@@ -2498,14 +3060,25 @@ async function loadCommandRuns() {
 }
 
 async function startCommandRun() {
+  const payload = commandPayload();
+  if (payload.scope === "all" && payload.replace_existing) {
+    const confirmed = window.confirm(
+      "Fresh replacement will permanently delete previous classification runs and clear manual/AI overrides before reclassifying the entire mailbox. Gmail emails, drafts, and stars are preserved. Continue?",
+    );
+    if (!confirmed) return;
+  }
   selectPipelineStep("classification");
-  commandStatus.textContent = "Creating durable run…";
+  commandStatus.textContent = payload.scope === "all" && payload.replace_existing
+    ? "Clearing old classification records and creating the fresh full-mailbox run…"
+    : payload.scope === "all"
+      ? "Creating a full-mailbox reclassification run while preserving history…"
+      : "Creating a new-email classification run…";
   commandStatus.classList.remove("error");
   try {
     const response = await apiFetch("/api/command/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(commandPayload()),
+      body: JSON.stringify(payload),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not start run");
@@ -2840,10 +3413,19 @@ async function initialize() {
       tab.addEventListener("click", () => navigateToAi(tab.dataset.aiMode));
     }
     window.addEventListener("hashchange", applyRouteFromHash);
+    window.addEventListener("resize", () => {
+      if (!battlegroundView.hidden) renderBattlegroundDecisionMap(latestBattlegroundReport);
+    });
     document.querySelector("#refreshBenchmark").addEventListener("click", () => void loadBenchmark());
     benchmarkFilter.addEventListener("change", renderBenchmarkRows);
     benchmarkScope.addEventListener("change", () => void loadBenchmark());
     document.querySelector("#refreshCommand").addEventListener("click", () => void loadCommandRuns());
+    commandClassificationScope.addEventListener("change", () => {
+      if (commandClassificationScope.value === "all") commandClassificationResultMode.value = "replace";
+      syncCommandClassificationOptions();
+    });
+    commandClassificationResultMode.addEventListener("change", syncCommandClassificationOptions);
+    runCommandPipeline.addEventListener("click", () => void startFullCommandPipeline());
     syncNewEmails.addEventListener("click", () => void startGmailSync());
     startCommandClassification.addEventListener("click", () => void startCommandRun());
     refreshCommandOutputs.addEventListener("click", () => void publishCommandOutputs());
@@ -2859,6 +3441,10 @@ async function initialize() {
     }
     document.querySelector("#refreshBattleground").addEventListener("click", () => void loadBattleground());
     battlegroundForm.addEventListener("submit", (event) => void startBattleground(event));
+    battlegroundDecisionPool.addEventListener("pointermove", handleDecisionPoolHover);
+    battlegroundDecisionPool.addEventListener("pointerleave", () => { battlegroundPoolTooltip.hidden = true; });
+    battlegroundCategoryHeatmap.addEventListener("pointermove", handleCategoryHeatmapHover);
+    battlegroundCategoryHeatmap.addEventListener("pointerleave", () => { battlegroundHeatmapTooltip.hidden = true; });
     document.querySelector("#refreshBoard").addEventListener("click", () => void loadBoard());
     boardCategory.addEventListener("change", () => {
       boardCurrentEmailId = null;
@@ -2886,6 +3472,28 @@ async function initialize() {
       renderAiReviewQueue();
     });
     runAiLane.addEventListener("click", () => void runAiLaneReview());
+    aiChatForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void askAiChat();
+    });
+    newAiChat.addEventListener("click", () => void createNewAiChat().catch((error) => {
+      aiChatStatus.textContent = error instanceof Error ? error.message : String(error);
+    }));
+    closeAiChat.addEventListener("click", () => {
+      if (!aiChatConversationIdValue) return;
+      void archiveAiChatConversation(aiChatConversationIdValue).catch((error) => {
+        aiChatStatus.textContent = error instanceof Error ? error.message : String(error);
+      });
+    });
+    deleteAiChat.addEventListener("click", () => {
+      if (!aiChatConversationIdValue || !aiChatConversationArchived) return;
+      void deleteAiChatConversation(aiChatConversationIdValue, aiChatConversationTitle.textContent).catch((error) => {
+        aiChatStatus.textContent = error instanceof Error ? error.message : String(error);
+      });
+    });
+    document.querySelectorAll("[data-chat-suggestion]").forEach((button) => {
+      button.addEventListener("click", () => void askAiChat(button.dataset.chatSuggestion));
+    });
     document.querySelector("#closeReplyDialog").addEventListener("click", () => replyDialog.close());
     document.querySelector("#generateReply").addEventListener("click", () => void generateStreamingReply());
     document.querySelector("#saveReply").addEventListener("click", () => void saveReplyDraft());

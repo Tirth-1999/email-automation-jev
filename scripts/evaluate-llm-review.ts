@@ -33,7 +33,7 @@ async function main() {
   const labeledPath = resolve("data/labeling/generated/labeled-emails.json");
   const outputPath = resolve("data/labeling/generated/llm-review-evaluation.json");
   const store = JSON.parse(await readFile(labeledPath, "utf8")) as { emails: LabeledEmail[] };
-  const target = new Set(["reply_needed", "interview_assessment", "offer"]);
+  const target = new Set(["reply_needed", "information_needed", "interview_assessment", "offer"]);
   const emails = store.emails.filter((email) => target.has(email.manual_label)).slice(0, limit);
   const results = [] as Array<Record<string, unknown>>;
   for (const email of emails) {

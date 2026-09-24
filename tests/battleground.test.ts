@@ -83,6 +83,18 @@ test("Battleground metrics separate provider latency and app overhead", () => {
   assert.equal(metrics.total_input_tokens, 400);
 });
 
+test("Battleground success rate preserves visible partial failures", () => {
+  const failed = { ...result(120, 4), status: "failed" as const, category: null, decision: null };
+  const metrics = calculateBattlegroundMetrics(
+    [...Array.from({ length: 119 }, () => result(100, 2)), failed],
+    2_000,
+    50,
+    50,
+    6_000,
+  );
+  assert.equal(metrics.success_rate, 0.9917);
+});
+
 test("Battleground decision summary groups categories and confidence bands", () => {
   const appliedHigh = { ...result(100, 2), category: "applied", decision: "applied", top_probability: 0.91 };
   const appliedMedium = { ...result(110, 2), category: "applied", decision: "applied", top_probability: 0.72 };

@@ -24,6 +24,25 @@ export interface ApplicationMaterializationResult {
   relationship_input_tokens: number;
 }
 
+export interface ApplicationStarState {
+  is_starred: boolean;
+  starred_at: string | null;
+}
+
+export function applicationStarState(
+  emailIds: string[],
+  anchors: ReadonlyMap<string, string>,
+): ApplicationStarState {
+  const timestamps = emailIds
+    .map((emailId) => anchors.get(emailId))
+    .filter((value): value is string => Boolean(value))
+    .sort((left, right) => Date.parse(right) - Date.parse(left));
+  return {
+    is_starred: timestamps.length > 0,
+    starred_at: timestamps[0] || null,
+  };
+}
+
 async function readEvidence(database: SupabaseClient): Promise<ApplicationEmailEvidence[]> {
   const rows: ApplicationEmailEvidence[] = [];
   for (let offset = 0; ; offset += PAGE_SIZE) {
@@ -139,6 +158,42 @@ export async function materializeApplications(
   const { data: existing, error: existingError } = await database.from("applications").select("*");
   if (existingError) throw new Error(`Could not load existing applications: ${existingError.message}`);
   const existingRows = (existing || []) as Array<Record<string, unknown>>;
+  const starAnchorRows = await readAllRows<{ id: string; application_starred_at: string | null }>(
+    database,
+    "emails",
+    "id,application_starred_at",
+  );
+  const starAnchors = new Map(
+    starAnchorRows
+      .filter((email) => Boolean(email.application_starred_at))
+      .map((email) => [email.id, String(email.application_starred_at)]),
+  );
+  const existingIds = existingRows.map((application) => String(application.id));
+  const existingIdSet = new Set(existingIds);
+  const promotedByApplicationId = new Map<string, Record<string, unknown>>();
+  try {
+    // Read the compact staging table in ordinary pages. Building `.in(...)`
+    // filters from hundreds of UUIDs creates very long PostgREST URLs and can
+    // surface as a generic `TypeError: fetch failed` before Supabase receives
+    // the request.
+    const resolutionRows = await readAllRows<Record<string, unknown>>(
+      database,
+      "application_company_resolutions",
+      "application_id,employer_name,title_name,promoted_company_at,promoted_title_at",
+    );
+    for (const resolution of resolutionRows) {
+      const applicationId = String(resolution.application_id);
+      if (existingIdSet.has(applicationId)) promotedByApplicationId.set(applicationId, resolution);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/application_company_resolutions|schema cache/i.test(message)) {
+      throw new Error(`Could not load promoted application identities: ${message}`);
+    }
+  }
+  const existingByKey = new Map(
+    existingRows.map((application) => [`${application.gmail_account_id}:${application.grouping_key}`, application]),
+  );
   const manualByKey = new Map(
     existingRows
       .filter((application) => application.grouping_source === "manual")
@@ -146,12 +201,25 @@ export async function materializeApplications(
   );
 
   const applicationRows = candidates.map((candidate) => {
-    const manual = manualByKey.get(`${candidate.gmailAccountId}:${candidate.groupingKey}`);
+    const key = `${candidate.gmailAccountId}:${candidate.groupingKey}`;
+    const manual = manualByKey.get(key);
+    const current = existingByKey.get(key);
+    const promoted = current ? promotedByApplicationId.get(String(current.id)) : null;
+    const promotedCompany = promoted?.promoted_company_at && typeof promoted.employer_name === "string"
+      ? promoted.employer_name
+      : null;
+    const promotedTitle = promoted?.promoted_title_at && typeof promoted.title_name === "string"
+      ? promoted.title_name
+      : null;
+    const star = applicationStarState(
+      candidate.messages.map((message) => message.emailId),
+      starAnchors,
+    );
     return {
       gmail_account_id: candidate.gmailAccountId,
       grouping_key: candidate.groupingKey,
-      company: manual ? manual.company : candidate.company,
-      role: manual ? manual.role : candidate.role,
+      company: manual ? manual.company : (promotedCompany || candidate.company),
+      role: manual ? manual.role : (promotedTitle || candidate.role),
       requisition_id: manual ? manual.requisition_id : candidate.requisitionId,
       current_status: manual ? manual.current_status : candidate.currentStatus,
       first_activity_at: candidate.firstActivityAt,
@@ -159,6 +227,8 @@ export async function materializeApplications(
       ghosted_at: manual ? manual.ghosted_at : candidate.ghostedAt,
       grouping_source: manual ? "manual" : "deterministic",
       manual_notes: manual ? manual.manual_notes : "",
+      is_starred: star.is_starred,
+      starred_at: star.starred_at,
     };
   });
 

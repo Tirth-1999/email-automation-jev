@@ -17,6 +17,8 @@
     "jev:evaluate": "tsx scripts/evaluate-jev.ts",
     "jev:evaluate:all": "tsx scripts/evaluate-jev.ts --all-labeled",
     "ai:evaluate": "tsx scripts/evaluate-llm-review.ts",
+    "companies:resolve": "tsx scripts/resolve-application-companies.ts",
+    "companies:promote": "tsx scripts/promote-company-resolutions.ts",
     "phase5:bootstrap": "tsx scripts/bootstrap-classification-data.ts",
     "classify": "tsx scripts/classify-emails.ts",
     "applications:group": "tsx scripts/group-applications.ts",

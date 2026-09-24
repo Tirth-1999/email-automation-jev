@@ -23,8 +23,7 @@ test("Gmail ingestion orchestrator reports progress and prevents overlapping job
   assert.equal(orchestrator.current()?.stats.discovered, 3);
   assert.throws(() => orchestrator.start(async () => { throw new Error("not reached"); }), /already running/);
   release?.();
-  await new Promise((resolve) => setImmediate(resolve));
-  const completed = orchestrator.current();
+  const completed = await orchestrator.waitForCompletion();
   assert.equal(completed?.status, "succeeded");
   assert.equal(completed?.result?.counts.inserted, 2);
   assert.equal(completed?.message, "Imported 2 new emails");
@@ -33,7 +32,7 @@ test("Gmail ingestion orchestrator reports progress and prevents overlapping job
 test("Gmail ingestion orchestrator exposes a safe failed state", async () => {
   const orchestrator = new GmailIngestionOrchestrator();
   orchestrator.start(async () => { throw new Error("OAuth token expired"); });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(orchestrator.current()?.status, "failed");
-  assert.match(orchestrator.current()?.error || "", /OAuth token expired/);
+  const completed = await orchestrator.waitForCompletion();
+  assert.equal(completed?.status, "failed");
+  assert.match(completed?.error || "", /OAuth token expired/);
 });

@@ -25,7 +25,7 @@ test("builds one bulk persistence payload for a completed batch", () => {
     decision: "applied",
     confidence: 0.9,
     top_probability: 0.9,
-    probabilities: { applied: 0.9, outreach: 0.01, reply_needed: 0.01, interview_assessment: 0.01, offer: 0.01, rejected: 0.01, other: 0.05 },
+    probabilities: { applied: 0.89, outreach: 0.01, reply_needed: 0.01, information_needed: 0.01, interview_assessment: 0.01, offer: 0.01, rejected: 0.01, other: 0.05 },
     action: { choice: "no_action", confidence: 0.9, probabilities: { no_action: 0.9, write_reply: 0.01, open_link: 0.01, fill_form: 0.01, schedule_interview: 0.01, complete_assessment: 0.01, send_document: 0.01, review_offer: 0.04 } },
     urgency: { score: 0, confidence: 0.9, probabilities: { none: 0.9, low: 0.05, normal: 0.03, high: 0.01, immediate: 0.01 } },
     draft_reply: { probability: 0.01, should_draft: false },

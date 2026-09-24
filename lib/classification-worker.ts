@@ -7,6 +7,7 @@ import {
   getClassificationRun,
   listQueuedClassificationEmailIds,
   refreshClassificationRunCounters,
+  resetAccountClassificationState,
   saveClassificationBatch,
   startClassificationRun,
   type ClassificationBatchOutcome,
@@ -32,6 +33,7 @@ export interface ClassificationWorkerConfig {
 
 export interface SelectionOptions {
   scope: RunScope;
+  resetExisting?: boolean;
   maximum?: number | null;
   after?: string | null;
   before?: string | null;
@@ -44,6 +46,23 @@ export interface SelectionPreview {
   previously_classified_count: number;
   selected_count: number;
   batch_count: number;
+}
+
+export function validateSelectionOptions(options: SelectionOptions): void {
+  if (options.resetExisting === true && options.scope !== "all") {
+    throw new Error("replacing existing classifications requires the entire-mailbox scope");
+  }
+  if (options.scope !== "all") return;
+  if (
+    options.maximum !== undefined && options.maximum !== null
+    || Boolean(options.after)
+    || Boolean(options.before)
+    || Boolean(options.emailIds?.length)
+  ) {
+    throw new Error(
+      "scope all is a destructive full-mailbox rebuild and cannot be combined with limit, date, or email-id filters",
+    );
+  }
 }
 
 interface StoredEmail extends ClassifiableEmail {
@@ -106,10 +125,13 @@ async function activeEmailIds(
 async function latestClassifiedIds(database: SupabaseClient, accountId: string): Promise<Set<string>> {
   const ids = await readPagedIds((from, to) =>
     database
-      .from("email_board")
-      .select("email_id")
-      .eq("gmail_account_id", accountId)
-      .not("classification_id", "is", null)
+      .from("email_classifications")
+      .select("email_id,classification_runs!inner(gmail_account_id,classifier_version)")
+      .eq("status", "succeeded")
+      .eq("classification_runs.gmail_account_id", accountId)
+      .eq("classification_runs.classifier_version", CLASSIFIER_VERSION)
+      .in("classification_runs.status", ["succeeded", "partial"])
+      .in("classification_runs.run_kind", ["production", "reprocess"])
       .order("email_id")
       .range(from, to),
   );
@@ -295,6 +317,10 @@ export async function createProductionClassificationRun(
   config: ClassificationWorkerConfig,
 ): Promise<{ run: ClassificationRunRow; queuedEmailCount: number }> {
   validateClassificationConfig(config);
+  validateSelectionOptions(options);
+  const fullReset = options.scope === "all" && options.resetExisting !== false
+    ? await resetAccountClassificationState(database, accountId)
+    : null;
   const selection = await selectClassificationEmailIds(database, accountId, options);
   const run = await createClassificationRun(database, {
     gmail_account_id: accountId,
@@ -312,6 +338,8 @@ export async function createProductionClassificationRun(
       after: options.after ?? null,
       before: options.before ?? null,
       custom_email_count: options.emailIds?.length || 0,
+      replace_existing: options.scope === "all" && options.resetExisting !== false,
+      full_reset: fullReset,
     },
     minimum_top_probability: config.minimumTopProbability,
     concurrency: config.concurrency,

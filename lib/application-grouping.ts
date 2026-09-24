@@ -2,6 +2,7 @@ export const APPLICATION_STATUSES = [
   "outreach",
   "applied",
   "reply_needed",
+  "information_needed",
   "interview_assessment",
   "offer",
   "rejected",
@@ -232,11 +233,12 @@ export function conversationGhostingDecision(
 const STATUS_RANK: Record<ApplicationStatus, number> = {
   outreach: 1,
   applied: 2,
-  reply_needed: 3,
-  interview_assessment: 4,
-  rejected: 5,
-  offer: 6,
-  ghosted: 7,
+  information_needed: 3,
+  reply_needed: 4,
+  interview_assessment: 5,
+  rejected: 6,
+  offer: 7,
+  ghosted: 8,
 };
 
 export type ThreadRelationshipDisposition = "same" | "different" | "ambiguous";

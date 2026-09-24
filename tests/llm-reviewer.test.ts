@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildLlmReviewPayload, reviewEmailWithOpenAI, shouldRequestLlmReview, summarizeLlmEvaluation } from "../lib/llm-reviewer.js";
+import { buildLlmReviewPayload, LLM_REVIEW_SYSTEM_PROMPT, reviewEmailWithOpenAI, shouldRequestLlmReview, summarizeLlmEvaluation } from "../lib/llm-reviewer.js";
 
 const input = {
   emailId: "email-1",
@@ -26,8 +26,15 @@ const input = {
 
 test("targets high-value and uncertain decisions", () => {
   assert.equal(shouldRequestLlmReview("offer", 0.99), true);
+  assert.equal(shouldRequestLlmReview("information_needed", 0.99), true);
   assert.equal(shouldRequestLlmReview("applied", 0.6), true);
   assert.equal(shouldRequestLlmReview("applied", 0.95), false);
+});
+
+test("keeps hiring-process feedback surveys outside information and assessment", () => {
+  assert.match(LLM_REVIEW_SYSTEM_PROMPT, /feedback or satisfaction survey is other/i);
+  assert.match(LLM_REVIEW_SYSTEM_PROMPT, /not information_needed/i);
+  assert.match(LLM_REVIEW_SYSTEM_PROMPT, /not interview_assessment/i);
 });
 
 test("summarizes labeled LLM eval results", () => {

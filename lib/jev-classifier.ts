@@ -11,6 +11,7 @@ export const JEV_CATEGORIES = [
   "applied",
   "outreach",
   "reply_needed",
+  "information_needed",
   "interview_assessment",
   "offer",
   "rejected",
@@ -19,7 +20,7 @@ export const JEV_CATEGORIES = [
 
 export type JevCategory = (typeof JEV_CATEGORIES)[number];
 export type ClassificationDecision = JevCategory | "uncertain";
-export const CLASSIFIER_VERSION = "job-email-jev-v4";
+export const CLASSIFIER_VERSION = "job-email-jev-v6";
 
 export const ACTION_TYPES = [
   "no_action",
@@ -92,24 +93,45 @@ export const EMAIL_CATEGORY_CRITERIA = {
     ],
   },
   reply_needed: {
-    meaning: "The sender requests a response, document, confirmation, or information from the job seeker.",
+    meaning: "The sender requires a written email or message response from the job seeker.",
     includes: [
       "recruiter asks whether the candidate is interested",
       "right-to-represent confirmation",
-      "request for an updated resume, availability, work authorization, relocation, or answers",
-      "an application step requiring a reply or action that is not an interview or assessment",
+      "request to reply with an updated resume, availability, interest, confirmation, or answers",
+      "a right-to-represent or recruiter conversation that must be answered in writing",
     ],
-    excludes: ["interview scheduling", "assessment or take-home exercise", "offer"],
+    excludes: ["an external form or portal that collects details", "interview scheduling", "assessment or take-home exercise", "offer"],
+  },
+  information_needed: {
+    meaning: "The hiring process requires the job seeker to provide their own administrative, eligibility, demographic, profile, or missing application information to complete or continue an application.",
+    includes: [
+      "EEO, self-identification, demographic, disability, veteran-status, or WOTC questionnaire",
+      "work authorization, sponsorship, contact, address, availability, or candidate-profile form",
+      "missing application details or an additional-information form",
+      "an administrative recruiting bot or portal questionnaire that does not evaluate ability",
+    ],
+    excludes: [
+      "a written email reply with no form or portal",
+      "coding, technical, cognitive, personality, or skills evaluation",
+      "interview scheduling or screening conversation",
+      "offer paperwork that explicitly finalizes an offer",
+      "candidate-experience, application-experience, or interview-process feedback or satisfaction survey",
+    ],
+    precedence: "Choose this when the requested form collects required information about the candidate rather than evaluating the candidate. The word questionnaire alone does not make something an assessment. A survey asking what the candidate thought about an application or interview belongs to other, not information_needed.",
   },
   interview_assessment: {
     meaning: "The hiring process requests, schedules, confirms, or advances an interview, screening, test, or assessment.",
     includes: [
       "phone/video/in-person interview",
       "AI or one-way screening conversation",
-      "coding test, case study, take-home, puzzle, questionnaire, or assessment",
+      "coding test, case study, take-home, puzzle, skills/personality evaluation, or assessment",
       "interview or assessment scheduling",
     ],
-    precedence: "Choose this over reply_needed when the requested action is an interview, screening, assessment, or scheduling step.",
+    excludes: [
+      "EEO, WOTC, demographic, eligibility, candidate-profile, or missing-information forms",
+      "candidate-experience or interview-process feedback survey",
+    ],
+    precedence: "Choose this over reply_needed only when the action evaluates the candidate or schedules/conducts an interview. Administrative information forms belong to information_needed.",
   },
   offer: {
     meaning: "The employer explicitly extends an offer or requests information specifically to roll out or finalize an offer.",
@@ -129,8 +151,9 @@ export const EMAIL_CATEGORY_CRITERIA = {
       "newsletters",
       "delivery failures",
       "candidate account administration without an application outcome",
+      "candidate-experience, application-experience, or interview-process feedback or satisfaction survey",
     ],
-    excludes: ["any clear application, outreach, reply, interview, assessment, offer, or rejection event"],
+    excludes: ["any clear application, outreach, reply, information request, interview, assessment, offer, or rejection event"],
   },
 } satisfies ChoiceCriteria;
 
@@ -140,6 +163,8 @@ export const categoryQuestion = choice(
     rules: [
       "Use the email direction, sender, recipients, subject, snippet, and body together.",
       "Select the most specific email category, using the precedence stated in the criteria.",
+      "Distinguish an administrative information form from an evaluation: EEO, WOTC, eligibility, profile, and missing-detail requests are information_needed; tests and interviews are interview_assessment.",
+      "A request for feedback about the application or interview experience is other. It does not become information_needed merely because it links to a form or questionnaire.",
       "Classify only this email. Do not infer ghosting from a single message.",
     ],
   },
@@ -158,7 +183,7 @@ export const actionQuestion = choice(
   {
     no_action: {
       meaning: "No response or task is required from the job seeker.",
-      examples: ["application confirmation", "rejection notice", "marketing email"],
+      examples: ["application confirmation", "rejection notice", "marketing email", "optional candidate-experience feedback survey"],
     },
     write_reply: {
       meaning: "Compose and send an email or message response.",
@@ -170,8 +195,8 @@ export const actionQuestion = choice(
       examples: ["verify an account", "view a portal update"],
     },
     fill_form: {
-      meaning: "Complete an application form, questionnaire, recruiting bot flow, or requested information form.",
-      excludes: ["assessment or test", "scheduling an interview"],
+      meaning: "Complete an administrative application, EEO, WOTC, eligibility, profile, recruiting-bot, or requested-information form.",
+      excludes: ["assessment or test", "scheduling an interview", "candidate-experience or interview feedback survey"],
     },
     schedule_interview: {
       meaning: "Choose or confirm an interview or screening time, usually through a scheduling link or calendar response.",

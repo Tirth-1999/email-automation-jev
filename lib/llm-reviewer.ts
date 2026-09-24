@@ -4,6 +4,7 @@ export const LLM_REVIEW_CATEGORIES = [
   "applied",
   "outreach",
   "reply_needed",
+  "information_needed",
   "interview_assessment",
   "offer",
   "rejected",
@@ -75,8 +76,10 @@ function responseText(payload: { output_text?: string; output?: Array<{ content?
 export const LLM_REVIEW_SYSTEM_PROMPT = [
   "You are the high-precision second-stage reviewer for a job-search email tracker.",
   "Jev is the primary classifier. Review only the supplied evidence and return the required JSON schema.",
-  "reply_needed means the user must write a response; a link-only task belongs in interview_assessment or applied, not reply_needed.",
-  "interview_assessment includes interview scheduling, calendar invitations, coding tests, take-homes, screening bots, and assessments.",
+  "reply_needed means the user must write an email or message response; a link-only form does not belong there.",
+  "information_needed means an administrative form or workflow collecting EEO, WOTC, demographic, eligibility, work-authorization, profile, or other missing application details.",
+  "interview_assessment includes interview scheduling, calendar invitations, coding tests, take-homes, evaluative screening bots, and skill/personality assessments. It excludes administrative information forms.",
+  "A candidate-experience, application-experience, or interview-process feedback or satisfaction survey is other. It is not information_needed and is not interview_assessment, because it asks for feedback about the process rather than candidate information or an evaluation of the candidate.",
   "offer requires explicit evidence that employment or contract terms are being offered; enthusiasm or next steps are not an offer.",
   "outreach is a cold or proactive contact and must not become ghosted merely because nobody replied.",
   "The candidate marked current_application is the application's existing database membership. Return its ID when that membership is correct; this confirms an already-grouped relationship rather than proposing a duplicate merge.",
@@ -85,7 +88,7 @@ export const LLM_REVIEW_SYSTEM_PROMPT = [
 ].join(" ");
 
 export function shouldRequestLlmReview(category: string | null, confidence: number | null): boolean {
-  return ["reply_needed", "interview_assessment", "offer"].includes(category || "")
+  return ["reply_needed", "information_needed", "interview_assessment", "offer"].includes(category || "")
     || (typeof confidence === "number" && confidence < 0.72);
 }
 

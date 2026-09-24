@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { TypeSafeClient } from "@typesafe-ai/sdk";
 import { createReadStream } from "node:fs";
 import { access } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -79,6 +80,15 @@ import {
   buildApplicationBoardSnapshot,
   type ApplicationBoardSnapshot,
 } from "../../lib/application-board-cache.js";
+import {
+  answerConversationWithOpenAI,
+  answerSqlResultWithOpenAI,
+  generateSqlWithOpenAI,
+} from "../../lib/nl-sql-chat.js";
+import {
+  routeAiChatMessage,
+  type AiChatHistoryMessage,
+} from "../../lib/ai-chat-router.js";
 
 const port = Number.parseInt(process.env.LABELING_UI_PORT || "4173", 10);
 const projectRoot = process.cwd();
@@ -152,17 +162,36 @@ interface OutputRefreshJob {
 }
 let outputRefresh: OutputRefreshJob | null = null;
 let activeOutputRefresh: Promise<void> | null = null;
+type ManualPipelineStage = "queued" | "ingestion" | "classification" | "publication" | "complete" | "failed";
+interface ManualPipelineJob {
+  id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  stage: ManualPipelineStage;
+  classification_run_id: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+}
+let manualPipeline: ManualPipelineJob | null = null;
+let activeManualPipeline: Promise<void> | null = null;
 type AnalyticsRange = "30" | "60" | "90" | "all";
 const analyticsRanges: AnalyticsRange[] = ["30", "60", "90", "all"];
 const analyticsSnapshotCache = createSnapshotCache(process.env.REDIS_URL?.trim() || "");
 let analyticsMaterializationInFlight: Promise<void> | null = null;
-const analyticsCacheKey = (range: AnalyticsRange) => `email-automation:analytics:v3:${range}`;
-const applicationBoardCacheKey = "email-automation:application-board:v1";
+const analyticsCacheKey = (range: AnalyticsRange) => `email-automation:analytics:v4:${range}`;
+const applicationBoardCacheKey = "email-automation:application-board:v2";
+const commandCenterCacheKey = "email-automation:command-center:v2";
+const aiReviewCacheKey = "email-automation:ai-review-queue:v2";
 let applicationBoardMaterializationInFlight: Promise<ApplicationBoardSnapshot> | null = null;
 
 function invalidateReadCaches(): void {
   analyticsSnapshotCache.clearMemory();
-  void analyticsSnapshotCache.delete([...analyticsRanges.map(analyticsCacheKey), applicationBoardCacheKey]);
+  void analyticsSnapshotCache.delete([
+    ...analyticsRanges.map(analyticsCacheKey),
+    applicationBoardCacheKey,
+    commandCenterCacheKey,
+    aiReviewCacheKey,
+  ]);
 }
 
 async function cachedAnalyticsSnapshot(range: AnalyticsRange): Promise<unknown> {
@@ -250,7 +279,10 @@ async function labelsStore(): Promise<LabeledStore> {
     () => true,
     () => false,
   );
-  if (exists) return readJson<LabeledStore>(labelsPath);
+  if (exists) {
+    const store = await readJson<LabeledStore>(labelsPath);
+    return { ...store, categories: [...LABEL_CATEGORIES] };
+  }
   return {
     version: 1,
     updated_at: new Date().toISOString(),
@@ -280,6 +312,103 @@ async function primaryAccountId(): Promise<string> {
   return account.id;
 }
 
+interface AiChatConversationRow {
+  id: string;
+  gmail_account_id: string;
+  title: string;
+  messages: AiChatMessageRow[];
+  archived_at: string | null;
+  last_message_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface AiChatMessageRow {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  route: "sql" | "conversation" | "unsupported" | null;
+  route_confidence: number | null;
+  model: string | null;
+  tool_used: boolean;
+  generated_sql: string | null;
+  row_count: number;
+  created_at: string;
+}
+
+function aiChatStorageError(action: string, message: string): Error {
+  return new Error(`${action}. Apply migration 013 first. ${message}`);
+}
+
+function aiChatTitle(question: string): string {
+  const compact = question.replace(/\s+/g, " ").trim();
+  if (!compact) return "New chat";
+  return compact.length > 56 ? `${compact.slice(0, 53).trimEnd()}…` : compact;
+}
+
+async function createAiChatConversation(accountId: string): Promise<AiChatConversationRow> {
+  const { data, error } = await database
+    .from("ai_chat_conversations")
+    .insert({ gmail_account_id: accountId, title: "New chat" })
+    .select("id,gmail_account_id,title,messages,archived_at,last_message_at,created_at,updated_at")
+    .single();
+  if (error) throw aiChatStorageError("Could not create AI chat", error.message);
+  return data as AiChatConversationRow;
+}
+
+async function getAiChatConversation(accountId: string, conversationId: string): Promise<AiChatConversationRow | null> {
+  const { data, error } = await database
+    .from("ai_chat_conversations")
+    .select("id,gmail_account_id,title,messages,archived_at,last_message_at,created_at,updated_at")
+    .eq("id", conversationId)
+    .eq("gmail_account_id", accountId)
+    .maybeSingle();
+  if (error) throw aiChatStorageError("Could not load AI chat", error.message);
+  return data as AiChatConversationRow | null;
+}
+
+async function loadAiChatMessages(conversationId: string): Promise<AiChatMessageRow[]> {
+  const { data, error } = await database
+    .from("ai_chat_conversations")
+    .select("messages")
+    .eq("id", conversationId)
+    .single();
+  if (error) throw aiChatStorageError("Could not load AI chat messages", error.message);
+  return Array.isArray(data?.messages) ? data.messages as AiChatMessageRow[] : [];
+}
+
+async function saveAiChatMessage(input: {
+  conversationId: string;
+  role: "user" | "assistant";
+  content: string;
+  route?: "sql" | "conversation" | "unsupported" | null;
+  routeConfidence?: number | null;
+  model?: string | null;
+  toolUsed?: boolean;
+  generatedSql?: string | null;
+  rowCount?: number;
+}): Promise<void> {
+  const now = new Date().toISOString();
+  const messages = await loadAiChatMessages(input.conversationId);
+  messages.push({
+    id: randomUUID(),
+    role: input.role,
+    content: input.content,
+    route: input.route ?? null,
+    route_confidence: input.routeConfidence ?? null,
+    model: input.model ?? null,
+    tool_used: input.toolUsed ?? false,
+    generated_sql: input.generatedSql ?? null,
+    row_count: input.rowCount ?? 0,
+    created_at: now,
+  });
+  const { error } = await database
+    .from("ai_chat_conversations")
+    .update({ messages, last_message_at: now })
+    .eq("id", input.conversationId);
+  if (error) throw aiChatStorageError("Could not save AI chat message", error.message);
+}
+
 function isMissingOperationsMigration(error: { code?: string; message?: string } | null): boolean {
   if (!error) return false;
   return error.code === "42703" || error.code === "PGRST204" || /pipeline_lock|last_automation/i.test(error.message || "");
@@ -304,7 +433,7 @@ async function automationLockActive(accountId: string): Promise<boolean> {
   return Date.parse(String(state.pipeline_lock_expires_at)) > Date.now();
 }
 
-async function commandPipelineSnapshot() {
+async function loadCommandPipelineBase() {
   const accountId = await primaryAccountId();
   const [accountResult, activeResult, classifiedResult, correctedResult, applicationResult, syncResult, runs, automation] = await Promise.all([
     database
@@ -357,8 +486,6 @@ async function commandPipelineSnapshot() {
       human_corrected_emails: correctedResult.count || 0,
       application_count: applicationResult.count || 0,
     },
-    outputs: outputRefresh,
-    ingestion: gmailIngestion.current(),
     automation: {
       enabled: process.env.AUTOMATION_ENABLED?.trim().toLowerCase() === "true",
       interval_minutes: Number(process.env.AUTOMATION_INTERVAL_MINUTES || "60"),
@@ -367,6 +494,29 @@ async function commandPipelineSnapshot() {
     },
     sync_runs: syncResult.data || [],
     runs,
+  };
+}
+
+async function commandPipelineSnapshot() {
+  const live = Boolean(
+    activeManualPipeline ||
+    gmailIngestion.isRunning() ||
+    activeClassificationRuns.size > 0 ||
+    activeOutputRefresh,
+  );
+  let base = live
+    ? null
+    : await analyticsSnapshotCache.get<Awaited<ReturnType<typeof loadCommandPipelineBase>>>(commandCenterCacheKey);
+  if (!base) {
+    base = await loadCommandPipelineBase();
+    if (!live) await analyticsSnapshotCache.set(commandCenterCacheKey, base, 15);
+  }
+  return {
+    ...base,
+    outputs: outputRefresh,
+    ingestion: gmailIngestion.current(),
+    pipeline: manualPipeline,
+    cache: { backend: analyticsSnapshotCache.backend(), live_bypass: live },
   };
 }
 
@@ -411,6 +561,9 @@ function startGmailIngestion() {
     });
     emailCache = null;
     invalidateReadCaches();
+    if (result.counts.inserted > 0 || result.counts.updated > 0 || result.counts.deleted > 0) {
+      outputRefresh = null;
+    }
     return {
       ...result,
       gmailAddress: profile.emailAddress,
@@ -429,6 +582,62 @@ async function boardEmail(emailId: string): Promise<Record<string, unknown>> {
   if (emailError) throw new Error(`Could not load email: ${emailError.message}`);
   if (boardError) throw new Error(`Could not load board decision: ${boardError.message}`);
   return { ...(board as Record<string, unknown>), ...(email as Record<string, unknown>) };
+}
+
+async function loadAiReviewSnapshot() {
+  const { data: boardRows, error: boardError, count } = await database
+    .from("email_board")
+    .select("email_id,internal_date,from_name,from_email,subject,snippet,effective_category,jev_decision,category_top_probability,next_action", { count: "exact" })
+    .in("effective_category", ["reply_needed", "information_needed", "interview_assessment", "offer"])
+    .order("internal_date", { ascending: false })
+    .limit(500);
+  if (boardError) throw new Error(`Could not load AI review queue: ${boardError.message}`);
+  const ids = (boardRows || []).map((row) => String(row.email_id));
+  const stored = new Map<string, Record<string, unknown>>();
+  const applicationMembership = new Map<string, string>();
+  for (let offset = 0; offset < ids.length; offset += 100) {
+    const batch = ids.slice(offset, offset + 100);
+    const [storedResult, membershipResult] = await Promise.all([
+      database
+        .from("emails")
+        .select("id,llm_review_category,llm_review_confidence,llm_review_should_override,llm_review_input,llm_review_output,llm_review_model,llm_reviewed_at")
+        .in("id", batch),
+      database
+        .from("application_messages")
+        .select("email_id,application_id")
+        .in("email_id", batch),
+    ]);
+    if (storedResult.error) throw new Error(`Could not load saved AI reviews. Apply migration 008. ${storedResult.error.message}`);
+    if (membershipResult.error) throw new Error(`Could not load AI review application memberships: ${membershipResult.error.message}`);
+    for (const row of storedResult.data || []) stored.set(String(row.id), row as Record<string, unknown>);
+    for (const row of membershipResult.data || []) applicationMembership.set(String(row.email_id), String(row.application_id));
+  }
+  const candidates = (boardRows || []).map((row) => ({
+    ...row,
+    ...(stored.get(String(row.email_id)) || {}),
+    current_application_id: applicationMembership.get(String(row.email_id)) || null,
+  }));
+  return {
+    candidates,
+    total: count ?? candidates.length,
+    models: availableOpenAiModels(),
+    ready: Boolean(process.env.OPENAI_API_KEY?.trim()),
+    policy: "Jev remains primary. AI reviews high-value lanes and stores a structured recommendation; it does not silently overwrite Jev or a human correction.",
+  };
+}
+
+async function cachedAiReviewSnapshot() {
+  const cached = await analyticsSnapshotCache.get<Awaited<ReturnType<typeof loadAiReviewSnapshot>>>(aiReviewCacheKey);
+  if (cached) return cached;
+  const snapshot = await loadAiReviewSnapshot();
+  await analyticsSnapshotCache.set(aiReviewCacheKey, snapshot, 300);
+  return snapshot;
+}
+
+async function refreshAiReviewSnapshot(): Promise<void> {
+  await analyticsSnapshotCache.delete([aiReviewCacheKey]);
+  const snapshot = await loadAiReviewSnapshot();
+  await analyticsSnapshotCache.set(aiReviewCacheKey, snapshot, 300);
 }
 
 function boardRecordToLabelingEmail(record: Record<string, unknown>): LabelingEmail {
@@ -521,10 +730,10 @@ function workerConfig(input: Record<string, unknown>): ClassificationWorkerConfi
 
 function startBackgroundClassification(runId: string, config: ClassificationWorkerConfig): void {
   if (activeClassificationRuns.has(runId)) return;
+  outputRefresh = null;
   const task = runClassification(database, runId, config)
-    .then((completed) => {
+    .then(() => {
       invalidateReadCaches();
-      if (["succeeded", "partial"].includes(completed.status)) startOutputRefresh(completed.id);
     })
     .catch((error: unknown) => console.error(`Classification run ${runId} failed:`, error))
     .finally(() => activeClassificationRuns.delete(runId));
@@ -559,7 +768,12 @@ function startOutputRefresh(sourceRunId: string | null = null): OutputRefreshJob
       });
       outputRefresh.stage = "building_analytics";
       outputRefresh.progress_percent = 96;
-      await Promise.all([refreshAnalyticsSnapshots(), refreshApplicationBoardSnapshot()]);
+      await Promise.all([
+        refreshAnalyticsSnapshots(),
+        refreshApplicationBoardSnapshot(),
+        refreshAiReviewSnapshot(),
+        analyticsSnapshotCache.delete([commandCenterCacheKey]),
+      ]);
       outputRefresh.status = "succeeded";
       outputRefresh.stage = "complete";
       outputRefresh.progress_percent = 100;
@@ -577,6 +791,64 @@ function startOutputRefresh(sourceRunId: string | null = null): OutputRefreshJob
       activeOutputRefresh = null;
     });
   return outputRefresh;
+}
+
+function startManualPipeline(): ManualPipelineJob {
+  manualPipeline = {
+    id: randomUUID(),
+    status: "queued",
+    stage: "queued",
+    classification_run_id: null,
+    started_at: null,
+    finished_at: null,
+    error: null,
+  };
+  const job = manualPipeline;
+  activeManualPipeline = Promise.resolve()
+    .then(async () => {
+      job.status = "running";
+      job.started_at = new Date().toISOString();
+
+      job.stage = "ingestion";
+      startGmailIngestion();
+      const ingestion = await gmailIngestion.waitForCompletion();
+      if (ingestion?.status !== "succeeded") throw new Error(ingestion?.error || "Gmail sync failed");
+
+      job.stage = "classification";
+      outputRefresh = null;
+      const config = workerConfig({});
+      const created = await createProductionClassificationRun(
+        database,
+        await primaryAccountId(),
+        { scope: "unclassified", maximum: null, after: null, before: null },
+        config,
+      );
+      job.classification_run_id = created.run.id;
+      const classified = await runClassification(database, created.run.id, config);
+      invalidateReadCaches();
+      if (!["succeeded", "partial"].includes(classified.status)) {
+        throw new Error(classified.error_message || `Jev classification ${classified.status}`);
+      }
+
+      job.stage = "publication";
+      const publication = startOutputRefresh(classified.id);
+      await activeOutputRefresh;
+      if (publication.status !== "succeeded") throw new Error(publication.error || "Output publication failed");
+
+      job.status = "succeeded";
+      job.stage = "complete";
+    })
+    .catch((error: unknown) => {
+      job.status = "failed";
+      job.stage = "failed";
+      job.error = error instanceof Error ? error.message : String(error);
+      console.error(`Manual pipeline ${job.id} failed:`, error);
+    })
+    .finally(() => {
+      job.finished_at = new Date().toISOString();
+      activeManualPipeline = null;
+    });
+  return job;
 }
 
 function battlegroundConfig(input: Record<string, unknown>): BattlegroundConfig {
@@ -1059,6 +1331,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
   if (request.method === "POST" && path === "/api/command/ingest") {
+    if (activeManualPipeline) {
+      json(response, 409, { error: "The full mailbox pipeline is currently running" });
+      return;
+    }
     if (gmailIngestion.isRunning()) {
       json(response, 409, { error: "A Gmail ingestion job is already running" });
       return;
@@ -1076,6 +1352,22 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   if (request.method === "GET" && path === "/api/command/status") {
     json(response, 200, await commandPipelineSnapshot());
+    return;
+  }
+  if (request.method === "POST" && path === "/api/command/pipeline") {
+    if (!process.env.TYPESAFE_API_KEY?.trim() || process.env.TYPESAFE_API_KEY === "replace_me") {
+      json(response, 400, { error: "Set TYPESAFE_API_KEY before running the pipeline" });
+      return;
+    }
+    if (activeManualPipeline || gmailIngestion.isRunning() || await classificationIsActive() || activeOutputRefresh) {
+      json(response, 409, { error: "Another mailbox pipeline step is already running" });
+      return;
+    }
+    if (await automationLockActive(await primaryAccountId())) {
+      json(response, 409, { error: "The scheduled mailbox pipeline is currently running" });
+      return;
+    }
+    json(response, 202, { pipeline: startManualPipeline() });
     return;
   }
   if (request.method === "GET" && path === "/api/operations/health") {
@@ -1103,6 +1395,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
   if (request.method === "POST" && path === "/api/command/publish") {
+    if (activeManualPipeline) {
+      json(response, 409, { error: "The full mailbox pipeline is currently running" });
+      return;
+    }
     if (gmailIngestion.isRunning() || await classificationIsActive()) {
       json(response, 409, { error: "Wait for Gmail sync and Jev classification to finish before publishing outputs" });
       return;
@@ -1126,6 +1422,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       json(response, 400, { error: "Set TYPESAFE_API_KEY before starting a classification run" });
       return;
     }
+    if (activeManualPipeline) {
+      json(response, 409, { error: "The full mailbox pipeline is currently running" });
+      return;
+    }
     if (gmailIngestion.isRunning()) {
       json(response, 409, { error: "Wait for Gmail ingestion to finish before starting Jev classification" });
       return;
@@ -1140,6 +1440,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       await primaryAccountId(),
       {
         scope: scopeValue as RunScope,
+        resetExisting: scopeValue === "all" ? input.replace_existing !== false : false,
         maximum: typeof input.maximum === "number" ? input.maximum : null,
         after: typeof input.after === "string" ? input.after : null,
         before: typeof input.before === "string" ? input.before : null,
@@ -1272,15 +1573,18 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       json(response, 400, { error: "application_id is required" });
       return;
     }
-    const { data, error } = await database
-      .from("applications")
-      .update({ is_starred: starred, starred_at: starred ? new Date().toISOString() : null })
-      .eq("id", applicationId)
-      .select("id,is_starred,starred_at")
-      .single();
-    if (error) throw new Error(`Could not save star. Apply migration 008. ${error.message}`);
-    await updateCachedApplicationStar(String(data.id), Boolean(data.is_starred), typeof data.starred_at === "string" ? data.starred_at : null);
-    json(response, 200, { application: data });
+    const { data, error } = await database.rpc("set_application_star", {
+      p_application_id: applicationId,
+      p_starred: starred,
+    });
+    if (error) throw new Error(`Could not save star. Apply migration 016. ${error.message}`);
+    const saved = (data || {}) as Record<string, unknown>;
+    await updateCachedApplicationStar(
+      String(saved.id || applicationId),
+      Boolean(saved.is_starred),
+      typeof saved.starred_at === "string" ? saved.starred_at : null,
+    );
+    json(response, 200, { application: saved });
     return;
   }
   if (request.method === "GET" && path === "/api/board") {
@@ -1493,44 +1797,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   if (request.method === "GET" && path === "/api/ai/reviews") {
     const limit = Math.max(1, Math.min(500, Number(requestUrl.searchParams.get("limit") || "500")));
-    const { data: boardRows, error: boardError, count } = await database
-      .from("email_board")
-      .select("email_id,internal_date,from_name,from_email,subject,snippet,effective_category,jev_decision,category_top_probability,next_action", { count: "exact" })
-      .in("effective_category", ["reply_needed", "interview_assessment", "offer"])
-      .order("internal_date", { ascending: false })
-      .limit(limit);
-    if (boardError) throw new Error(`Could not load AI review queue: ${boardError.message}`);
-    const ids = (boardRows || []).map((row) => String(row.email_id));
-    const stored = new Map<string, Record<string, unknown>>();
-    const applicationMembership = new Map<string, string>();
-    for (let offset = 0; offset < ids.length; offset += 100) {
-      const batch = ids.slice(offset, offset + 100);
-      const [storedResult, membershipResult] = await Promise.all([
-        database
-          .from("emails")
-          .select("id,llm_review_category,llm_review_confidence,llm_review_should_override,llm_review_input,llm_review_output,llm_review_model,llm_reviewed_at")
-          .in("id", batch),
-        database
-          .from("application_messages")
-          .select("email_id,application_id")
-          .in("email_id", batch),
-      ]);
-      if (storedResult.error) throw new Error(`Could not load saved AI reviews. Apply migration 008. ${storedResult.error.message}`);
-      if (membershipResult.error) throw new Error(`Could not load AI review application memberships: ${membershipResult.error.message}`);
-      for (const row of storedResult.data || []) stored.set(String(row.id), row as Record<string, unknown>);
-      for (const row of membershipResult.data || []) applicationMembership.set(String(row.email_id), String(row.application_id));
-    }
-    const candidates = (boardRows || []).map((row) => ({
-      ...row,
-      ...(stored.get(String(row.email_id)) || {}),
-      current_application_id: applicationMembership.get(String(row.email_id)) || null,
-    }));
+    const snapshot = await cachedAiReviewSnapshot();
     json(response, 200, {
-      candidates,
-      total: count ?? candidates.length,
-      models: availableOpenAiModels(),
-      ready: Boolean(process.env.OPENAI_API_KEY?.trim()),
-      policy: "Jev remains primary. AI reviews high-value lanes and stores a structured recommendation; it does not silently overwrite Jev or a human correction.",
+      ...snapshot,
+      candidates: snapshot.candidates.slice(0, limit),
+      cache: { backend: analyticsSnapshotCache.backend() },
     });
     return;
   }
@@ -1555,7 +1826,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       candidateApplications: await candidateApplications(stored),
     };
     const effectiveCategory = typeof stored.effective_category === "string" ? stored.effective_category : null;
-    const isHighValueLane = ["reply_needed", "interview_assessment", "offer"].includes(effectiveCategory || "");
+    const isHighValueLane = ["reply_needed", "information_needed", "interview_assessment", "offer"].includes(effectiveCategory || "");
     if (!isHighValueLane && !shouldRequestLlmReview(reviewInput.jevCategory, reviewInput.jevConfidence)) {
       json(response, 400, { error: "This decision is not in the targeted AI review policy" });
       return;
@@ -1573,6 +1844,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       llm_reviewed_at: reviewedAt,
     }).eq("id", emailId);
     if (error) throw new Error(`Could not save AI review. Apply migration 008. ${error.message}`);
+    await analyticsSnapshotCache.delete([aiReviewCacheKey]);
     json(response, 200, { decision, input: exactInput, model, reviewed_at: reviewedAt });
     return;
   }
@@ -1598,6 +1870,213 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (error) throw new Error(`Could not join email to application: ${error.message}`);
     startOutputRefresh(null);
     json(response, 200, { email_id: emailId, application_id: applicationId, joined: true });
+    return;
+  }
+  if (request.method === "GET" && path === "/api/ai/chats") {
+    const accountId = await primaryAccountId();
+    const { data, error } = await database
+      .from("ai_chat_conversations")
+      .select("id,gmail_account_id,title,archived_at,last_message_at,created_at,updated_at")
+      .eq("gmail_account_id", accountId)
+      .order("last_message_at", { ascending: false })
+      .limit(100);
+    if (error) throw aiChatStorageError("Could not list AI chats", error.message);
+    json(response, 200, { conversations: data || [] });
+    return;
+  }
+  if (request.method === "POST" && path === "/api/ai/chats") {
+    const conversation = await createAiChatConversation(await primaryAccountId());
+    json(response, 201, { conversation });
+    return;
+  }
+  const aiChatMessagesMatch = path.match(/^\/api\/ai\/chats\/([0-9a-f-]{36})\/messages$/i);
+  if (request.method === "GET" && aiChatMessagesMatch) {
+    const accountId = await primaryAccountId();
+    const conversation = await getAiChatConversation(accountId, aiChatMessagesMatch[1] || "");
+    if (!conversation) {
+      json(response, 404, { error: "AI chat was not found" });
+      return;
+    }
+    const { messages, ...conversationMetadata } = conversation;
+    json(response, 200, { conversation: conversationMetadata, messages });
+    return;
+  }
+  const aiChatConversationMatch = path.match(/^\/api\/ai\/chats\/([0-9a-f-]{36})$/i);
+  if (request.method === "PATCH" && aiChatConversationMatch) {
+    const accountId = await primaryAccountId();
+    const conversationId = aiChatConversationMatch[1] || "";
+    if (!await getAiChatConversation(accountId, conversationId)) {
+      json(response, 404, { error: "AI chat was not found" });
+      return;
+    }
+    const input = await body(request);
+    if (typeof input.archived !== "boolean") {
+      json(response, 400, { error: "archived must be a boolean" });
+      return;
+    }
+    const { data, error } = await database
+      .from("ai_chat_conversations")
+      .update({ archived_at: input.archived ? new Date().toISOString() : null })
+      .eq("id", conversationId)
+      .eq("gmail_account_id", accountId)
+      .select("id,gmail_account_id,title,archived_at,last_message_at,created_at,updated_at")
+      .single();
+    if (error) throw aiChatStorageError("Could not update AI chat", error.message);
+    json(response, 200, { conversation: data });
+    return;
+  }
+  if (request.method === "DELETE" && aiChatConversationMatch) {
+    const accountId = await primaryAccountId();
+    const conversationId = aiChatConversationMatch[1] || "";
+    const { data, error } = await database
+      .from("ai_chat_conversations")
+      .delete()
+      .eq("id", conversationId)
+      .eq("gmail_account_id", accountId)
+      .select("id")
+      .maybeSingle();
+    if (error) throw aiChatStorageError("Could not delete AI chat", error.message);
+    if (!data) {
+      json(response, 404, { error: "AI chat was not found" });
+      return;
+    }
+    json(response, 200, { deleted: true, conversation_id: conversationId });
+    return;
+  }
+  if (request.method === "POST" && path === "/api/ai/chat") {
+    const input = await body(request);
+    const question = typeof input.question === "string" ? input.question.trim().slice(0, 2_000) : "";
+    const apiKey = process.env.OPENAI_API_KEY?.trim() || "";
+    const models = availableOpenAiModels();
+    const requestedModel = typeof input.model === "string" ? input.model.trim() : "";
+    const model = requestedModel && models.includes(requestedModel) ? requestedModel : (models[0] ?? "gpt-4o-mini");
+    if (!question) {
+      json(response, 400, { error: "question is required" });
+      return;
+    }
+    if (!apiKey) {
+      json(response, 400, { error: "Set OPENAI_API_KEY before using AI Chat" });
+      return;
+    }
+    if (!process.env.TYPESAFE_API_KEY?.trim()) {
+      json(response, 400, { error: "Set TYPESAFE_API_KEY before using AI Chat routing" });
+      return;
+    }
+    const accountId = await primaryAccountId();
+    const requestedConversationId = typeof input.conversation_id === "string" ? input.conversation_id.trim() : "";
+    const conversation = requestedConversationId
+      ? await getAiChatConversation(accountId, requestedConversationId)
+      : await createAiChatConversation(accountId);
+    if (!conversation) {
+      json(response, 404, { error: "AI chat was not found" });
+      return;
+    }
+    if (conversation.archived_at) {
+      json(response, 409, { error: "This chat is closed. Start a new chat to continue." });
+      return;
+    }
+    const storedMessages = await loadAiChatMessages(conversation.id);
+    const history: AiChatHistoryMessage[] = storedMessages.slice(-6).map((message) => ({
+      role: message.role,
+      text: message.content.slice(0, 1_000),
+    }));
+    await saveAiChatMessage({ conversationId: conversation.id, role: "user", content: question });
+    let conversationTitle = conversation.title;
+    if (conversation.title === "New chat" && !storedMessages.length) {
+      conversationTitle = aiChatTitle(question);
+      const { error: titleError } = await database
+        .from("ai_chat_conversations")
+        .update({ title: conversationTitle })
+        .eq("id", conversation.id)
+        .eq("gmail_account_id", accountId);
+      if (titleError) throw aiChatStorageError("Could not title AI chat", titleError.message);
+    }
+    const jevModel = process.env.TYPESAFE_MODEL?.trim() || "jev-1.13.0";
+    const router = new TypeSafeClient({
+      defaultModel: jevModel,
+      timeout: 15_000,
+      retry: { maxRetries: 2 },
+    });
+    const route = await routeAiChatMessage(router, question, history, jevModel);
+    if (route.route === "unsupported") {
+      const answer = "I can help with read-only questions about your job-search applications and classified emails, but I can’t perform changes or answer unrelated external questions here.";
+      await saveAiChatMessage({
+        conversationId: conversation.id,
+        role: "assistant",
+        content: answer,
+        route: route.route,
+        routeConfidence: route.confidence,
+        model,
+      });
+      json(response, 200, {
+        answer,
+        sql: null,
+        explanation: "Jev routed this message outside the read-only mailbox scope.",
+        row_count: 0,
+        rows: [],
+        model,
+        tool_used: false,
+        route,
+        conversation_id: conversation.id,
+        conversation_title: conversationTitle,
+      });
+      return;
+    }
+    if (route.route === "conversation") {
+      const answer = await answerConversationWithOpenAI(apiKey, model, question, history);
+      await saveAiChatMessage({
+        conversationId: conversation.id,
+        role: "assistant",
+        content: answer,
+        route: route.route,
+        routeConfidence: route.confidence,
+        model,
+      });
+      json(response, 200, {
+        answer,
+        sql: null,
+        explanation: "Jev determined that no mailbox lookup was needed.",
+        row_count: 0,
+        rows: [],
+        model,
+        tool_used: false,
+        route,
+        conversation_id: conversation.id,
+        conversation_title: conversationTitle,
+      });
+      return;
+    }
+    const generated = await generateSqlWithOpenAI(apiKey, model, question, history);
+    const { data, error } = await database.rpc("execute_ai_readonly_sql", {
+      p_gmail_account_id: accountId,
+      p_sql: generated.sql,
+    });
+    if (error) throw new Error(`AI Chat SQL failed. Apply migration 011 first. ${error.message}`);
+    const rows = Array.isArray(data) ? data as Array<Record<string, unknown>> : [];
+    const answer = await answerSqlResultWithOpenAI(apiKey, model, question, generated.sql, rows);
+    await saveAiChatMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: answer,
+      route: route.route,
+      routeConfidence: route.confidence,
+      model,
+      toolUsed: true,
+      generatedSql: generated.sql,
+      rowCount: rows.length,
+    });
+    json(response, 200, {
+      answer,
+      sql: generated.sql,
+      explanation: generated.explanation,
+      row_count: rows.length,
+      rows: rows.slice(0, 25),
+      model,
+      tool_used: true,
+      route,
+      conversation_id: conversation.id,
+      conversation_title: conversationTitle,
+    });
     return;
   }
   if (request.method === "GET" && path === "/api/benchmark") {

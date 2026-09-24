@@ -18,27 +18,30 @@
           <button class="view-tab" data-view="application_board" type="button" role="tab" aria-selected="false">Application Board</button>
           <button class="view-tab" data-view="lab" type="button" role="tab" aria-selected="false">Jev Lab</button>
           <button class="view-tab" data-view="analytics" type="button" role="tab" aria-selected="false">Analytics</button>
-          <button class="view-tab" data-view="ai" type="button" role="tab" aria-selected="false">AI</button>
+          <button class="view-tab" data-view="ai" type="button" role="tab" aria-selected="false">AI Space</button>
         </nav>
         <div class="top-actions">
           <button id="openResample" class="button add" type="button">Add emails</button>
           <button id="exportCsv" class="button secondary" type="button">Export CSV</button>
           <button id="exportJson" class="button primary" type="button">Export JSON</button>
         </div>
+      </header>
+
+      <div id="subnavParking" hidden>
         <nav id="labSwitch" class="lab-switch" role="tablist" aria-label="Jev Lab mode" hidden>
-          <button class="lab-tab" data-lab-mode="labels" type="button" role="tab" aria-selected="false"><span>1</span> Label Set</button>
-          <button class="lab-tab active" data-lab-mode="quality" type="button" role="tab" aria-selected="true"><span>2</span> Quality</button>
-          <button class="lab-tab" data-lab-mode="performance" type="button" role="tab" aria-selected="false"><span>3</span> Performance</button>
+          <button class="lab-tab" data-lab-mode="labels" type="button" role="tab" aria-selected="false">Label Set</button>
+          <button class="lab-tab active" data-lab-mode="quality" type="button" role="tab" aria-selected="true">Quality</button>
+          <button class="lab-tab" data-lab-mode="performance" type="button" role="tab" aria-selected="false">Performance</button>
         </nav>
         <nav id="boardSwitch" class="lab-switch board-switch" role="tablist" aria-label="Application Board mode" hidden>
-          <button class="lab-tab active" data-board-mode="emails" type="button" role="tab" aria-selected="true"><span>1</span> Emails</button>
-          <button class="lab-tab" data-board-mode="applications" type="button" role="tab" aria-selected="false"><span>2</span> Applications</button>
+          <button class="lab-tab active" data-board-mode="emails" type="button" role="tab" aria-selected="true">Emails</button>
+          <button class="lab-tab" data-board-mode="applications" type="button" role="tab" aria-selected="false">Applications</button>
         </nav>
         <nav id="aiSwitch" class="lab-switch ai-switch" role="tablist" aria-label="AI workspace mode" hidden>
-          <button class="lab-tab active" data-ai-mode="brain" type="button" role="tab" aria-selected="true"><span>1</span> AI Brain</button>
-          <button class="lab-tab" data-ai-mode="chat" type="button" role="tab" aria-selected="false"><span>2</span> AI Chat</button>
+          <button class="lab-tab active" data-ai-mode="brain" type="button" role="tab" aria-selected="true">AI Brain</button>
+          <button class="lab-tab" data-ai-mode="chat" type="button" role="tab" aria-selected="false">AI Chat</button>
         </nav>
-      </header>
+      </div>
 
       <aside id="reviewSidebar" class="sidebar">
         <label class="search">
@@ -55,6 +58,7 @@
 
       <main id="reviewReader" class="reader">
         <div class="reader-toolbar">
+          <div id="labLabelsNavHost" class="page-subnav-strip reader-subnav"></div>
           <button id="previousEmail" class="icon-button" type="button" aria-label="Previous email">←</button>
           <span id="positionText">Email 1 of 150</span>
           <button id="nextEmail" class="icon-button" type="button" aria-label="Next email">→</button>
@@ -95,12 +99,8 @@
       </aside>
 
       <main id="benchmarkView" class="benchmark-view" hidden>
-        <section class="benchmark-heading">
-          <div>
-            <p class="eyebrow">Category evaluation</p>
-            <h2>Human category vs Jev</h2>
-            <p>The email category is scored against your labels. Next action, urgency, and draft-needed decisions are visible but remain unscored until you label those fields too.</p>
-          </div>
+        <section class="page-toolbar benchmark-toolbar jev-lab-toolbar">
+          <div id="labQualityNavHost" class="page-subnav-strip"></div>
           <div class="benchmark-controls">
             <label>
               <span>Dataset</span>
@@ -140,14 +140,6 @@
       </main>
 
       <main id="commandView" class="command-view" hidden>
-        <section class="command-heading">
-          <div>
-            <p class="eyebrow">Mailbox pipeline · Operations</p>
-            <h2>Command Center</h2>
-            <p>Run the mailbox in order: sync new Gmail messages, classify the unclassified pool with Jev, then publish that result set to the Email Board, Applications, and Analytics.</p>
-          </div>
-          <button id="refreshCommand" class="button secondary" type="button">Refresh pipeline</button>
-        </section>
         <section class="pipeline-steps" aria-label="Email processing pipeline">
           <article id="ingestionStep" class="pipeline-step is-selected" data-pipeline-step="ingestion" tabindex="0" role="button" aria-pressed="true">
             <div class="pipeline-step-heading"><span class="pipeline-step-number">1</span><div><h3>Sync Gmail</h3><small id="commandAccount">Connected mailbox</small></div><span id="commandIngestionState" class="pipeline-state">Ready</span></div>
@@ -162,7 +154,12 @@
           </article>
           <article id="classificationStep" class="pipeline-step" data-pipeline-step="classification" tabindex="0" role="button" aria-pressed="false">
             <div class="pipeline-step-heading"><span class="pipeline-step-number">2</span><div><h3>Classify with Jev</h3><small>Durable production run</small></div><span id="commandClassificationState" class="pipeline-state">Ready</span></div>
-            <p>Jev classifies only emails that do not already have a completed production result.</p>
+            <p>Choose an incremental run or reclassify the complete mailbox.</p>
+            <div class="classification-options">
+              <label><span>Email scope</span><select id="commandClassificationScope"><option value="unclassified">New emails only</option><option value="all">Entire mailbox</option></select></label>
+              <label><span>Result handling</span><select id="commandClassificationResultMode" disabled><option value="preserve">Keep history</option><option value="replace">Drop old records + save fresh</option></select></label>
+            </div>
+            <small id="commandClassificationPolicy" class="classification-policy">Existing classifications and corrections stay unchanged.</small>
             <div class="pipeline-metrics">
               <div><strong id="commandUnclassifiedCount">—</strong><span>waiting</span></div>
               <div><strong id="commandClassifiedCount">—</strong><span>classified</span></div>
@@ -184,9 +181,13 @@
           </article>
         </section>
         <section id="automationHealth" class="automation-health" aria-live="polite">
-          <span class="automation-health-dot"></span>
-          <div><strong id="automationHealthTitle">Hourly automation not configured</strong><small id="automationHealthDetail">Apply migration 007 and run the scheduler when deployment is ready.</small></div>
-          <span id="automationHealthMetric" class="automation-health-metric">Manual mode</span>
+          <div class="automation-health-summary">
+            <span class="automation-health-dot"></span>
+            <div><strong id="automationHealthTitle">Hourly automation not configured</strong><small id="automationHealthDetail">Apply migration 007 and run the scheduler when deployment is ready.</small></div>
+            <span id="automationHealthMetric" class="automation-health-metric">Manual mode</span>
+          </div>
+          <button id="runCommandPipeline" class="button primary" type="button">Run pipeline</button>
+          <button id="refreshCommand" class="button secondary" type="button">Refresh pipeline</button>
         </section>
         <p id="commandStatus" class="pipeline-status" aria-live="polite"></p>
         <section class="pipeline-inspector" aria-live="polite">
@@ -210,7 +211,7 @@
             <div class="flow-node jev-core" data-classification-stage="jev"><span class="flow-icon">J</span><strong>Jev</strong><small>Choice + Score + Noul</small></div>
             <div class="jev-beam outgoing" aria-hidden="true"><span></span><i></i></div>
             <div class="outcome-cloud" data-classification-stage="outcomes" aria-label="Jev classification outcomes">
-              <span style="--delay: 0">Applied</span><span style="--delay: 1">Outreach</span><span style="--delay: 2">Reply needed</span><span style="--delay: 3">Interview</span><span style="--delay: 4">Offer</span><span style="--delay: 5">Rejected</span><span style="--delay: 6">Other</span><span style="--delay: 7">Uncertain</span>
+              <span style="--delay: 0">Applied</span><span style="--delay: 1">Outreach</span><span style="--delay: 2">Reply needed</span><span style="--delay: 3">Information needed</span><span style="--delay: 4">Interview</span><span style="--delay: 5">Offer</span><span style="--delay: 6">Rejected</span><span style="--delay: 7">Other</span><span style="--delay: 8">Uncertain</span>
             </div>
             <div class="flow-live-metrics classification-live-metrics">
               <span><small>Status</small><strong id="flowRunStatus">Idle</strong></span><span><small>Total</small><strong id="flowRunTotal">0</strong></span><span><small>Processed</small><strong id="flowRunProcessed">0</strong></span><span><small>Succeeded</small><strong id="flowRunSucceeded">0</strong></span><span><small>Failed</small><strong id="flowRunFailed">0</strong></span><span><small>Uncertain</small><strong id="flowRunUncertain">0</strong></span>
@@ -232,43 +233,51 @@
       </main>
 
       <main id="battlegroundView" class="battleground-view" hidden>
-        <section class="command-heading">
-          <div>
-            <p class="eyebrow">Jev Lab · Performance</p>
-            <h2>Live throughput test</h2>
-            <p>Classify a fresh random pool without changing production results. This separates Jev request latency from database and application overhead, then projects the observed wall-clock rate across the active mailbox.</p>
+        <section class="page-toolbar jev-lab-toolbar">
+          <div id="labPerformanceNavHost" class="page-subnav-strip"></div>
+          <div class="command-heading-actions inline-heading-actions">
+            <button id="refreshBattleground" class="button secondary" type="button">Refresh</button>
           </div>
-          <button id="refreshBattleground" class="button secondary" type="button">Refresh</button>
         </section>
         <form id="battlegroundForm" class="command-panel battleground-runner">
-            <div class="panel-heading"><h3>Random speed test</h3><span>Same Jev v4 questions</span></div>
+            <div class="panel-heading"><h3>Random speed test</h3><span>Current Jev questions</span></div>
             <div class="battleground-runner-row">
               <div class="command-fields battleground-controls">
                 <label><span>Random emails</span><select id="battlegroundSample"><option value="25">25</option><option value="50">50</option><option value="100">100</option><option value="200">200</option><option value="500">500</option><option value="1000">1,000</option><option value="3000">3,000</option><option value="6000" selected>6,000</option></select></label>
                 <label><span>Concurrency</span><select id="battlegroundConcurrency"><option value="5">5</option><option value="10">10</option><option value="25">25</option><option value="50">50</option><option value="100">100</option><option value="250">250</option><option value="500" selected>500</option></select></label>
                 <label><span>Confidence threshold</span><input id="battlegroundThreshold" type="number" min="0" max="1" step="0.01" value="0.6" /></label>
-                <label><span>Retries</span><select id="battlegroundRetries"><option value="0" selected>0 · raw response</option><option value="2">2 · production-like</option></select></label>
               </div>
               <button id="startBattleground" class="button primary" type="submit">Run random test</button>
             </div>
-            <div class="battleground-runner-footer">
-              <div class="battleground-note"><strong>No application rate throttle.</strong> Calls begin as concurrency slots open; rate limits remain visible.</div>
-              <p id="battlegroundStatus" class="resample-status" aria-live="polite">No test is running.</p>
-            </div>
+            <p id="battlegroundStatus" class="visually-hidden" aria-live="polite">No test is running.</p>
         </form>
-        <section class="battleground-layout">
-          <section class="command-panel battleground-summary">
-            <div class="panel-heading"><h3>Live measurement</h3><span id="battlegroundRunLabel">No run</span></div>
-            <div class="run-progress"><span id="battlegroundProgress"></span></div>
-            <div id="battlegroundCards" class="battleground-cards"></div>
-          </section>
-          <section class="battleground-decision-panel command-panel">
+        <section class="command-panel battleground-summary stress-kpi-panel">
+          <div class="panel-heading"><div><h3>Live measurement</h3><small>Provider time is separated from application overhead</small></div><span id="battlegroundRunLabel">No run</span></div>
+          <div class="run-progress"><span id="battlegroundProgress"></span></div>
+          <div id="battlegroundCards" class="battleground-cards"></div>
+        </section>
+        <section class="battleground-visual-grid">
+          <section class="command-panel stress-pool-panel">
             <div class="panel-heading">
-              <div><h3>Decision heatmap</h3><small>Area = email volume · color = confidence</small></div>
+              <div><h3>Live email decision pool</h3><small>Every square is one selected email · color identifies the Jev decision</small></div>
               <span id="battlegroundDecisionCount">0 decisions</span>
             </div>
-            <div class="decision-map-legend" aria-label="Confidence legend"><span class="low">Low</span><span class="medium">Medium</span><span class="high">High</span><span class="failed">Failed</span></div>
-            <div id="battlegroundDecisionMap" class="decision-map" aria-live="polite"><p class="decision-map-empty">Run a test to see Jev’s decisions take shape.</p></div>
+            <div id="battlegroundDecisionLegend" class="decision-pool-legend" aria-label="Decision category legend"></div>
+            <div id="battlegroundDecisionMap" class="decision-pool" aria-live="polite">
+              <canvas id="battlegroundDecisionPool" aria-label="Live pool of classified email decisions"></canvas>
+              <div class="decision-pool-scan" aria-hidden="true"></div>
+              <p class="decision-map-empty">Run a test to watch each email settle into a decision.</p>
+              <div id="battlegroundPoolTooltip" class="canvas-tooltip" role="tooltip" hidden></div>
+            </div>
+          </section>
+          <section class="command-panel category-heatmap-panel">
+            <div class="panel-heading">
+              <div><h3>Outcome heat map</h3><small>Area changes dynamically with each category's share</small></div>
+            </div>
+            <div class="category-heatmap-wrap">
+              <canvas id="battlegroundCategoryHeatmap" aria-label="Proportional heat map of Jev decision outcomes"></canvas>
+              <div id="battlegroundHeatmapTooltip" class="canvas-tooltip" role="tooltip" hidden></div>
+            </div>
           </section>
         </section>
         <details class="battleground-results command-panel">
@@ -283,14 +292,10 @@
       </main>
 
       <main id="boardView" class="board-view" hidden>
-        <section class="command-heading">
-          <div>
-            <p class="eyebrow">Application Board · Email decisions</p>
-            <h2>Emails</h2>
-            <p>Inspect the latest Jev decision, apply a human correction without changing the original result, and generate a contextual reply draft for your review.</p>
-          </div>
+        <section class="page-toolbar">
+          <div id="boardEmailsNavHost" class="page-subnav-strip"></div>
           <div class="board-heading-actions">
-            <select id="boardCategory" aria-label="Filter Email Board by category"><option value="all">All categories</option><option value="applied">Applied</option><option value="outreach">Outreach</option><option value="reply_needed">Reply needed</option><option value="interview_assessment">Interview / assessment</option><option value="offer">Offer</option><option value="rejected">Rejected</option><option value="other">Other</option><option value="uncertain">Uncertain</option></select>
+            <select id="boardCategory" aria-label="Filter Email Board by category"><option value="all">All categories</option><option value="applied">Applied</option><option value="outreach">Outreach</option><option value="reply_needed">Reply needed</option><option value="information_needed">Information needed</option><option value="interview_assessment">Interview / assessment</option><option value="offer">Offer</option><option value="rejected">Rejected</option><option value="other">Other</option><option value="uncertain">Uncertain</option></select>
             <select id="boardAction" aria-label="Filter Email Board by next action"><option value="all">All actions</option><option value="needs_action">Needs action</option><option value="write_reply">Write reply</option><option value="open_link">Open link</option><option value="fill_form">Fill form</option><option value="schedule_interview">Schedule interview</option><option value="complete_assessment">Complete assessment</option><option value="send_document">Send document</option><option value="review_offer">Review offer</option><option value="no_action">No action</option></select>
             <button id="refreshBoard" class="button secondary" type="button">Refresh</button>
           </div>
@@ -307,12 +312,7 @@
       </main>
 
       <main id="analyticsView" class="analytics-view" hidden>
-        <section class="command-heading">
-          <div>
-            <p class="eyebrow">Application intelligence · Measured decisions</p>
-            <h2>Analytics</h2>
-            <p>Live aggregates from the classified mailbox, durable production runs, human corrections, and the current held-out Jev benchmark. Click a category or action to inspect its source emails.</p>
-          </div>
+        <section class="page-toolbar analytics-toolbar page-toolbar-actions-only">
           <div class="board-heading-actions analytics-heading-actions">
             <label class="analytics-range-control"><span>Time range</span><select id="analyticsRange" aria-label="Analytics time range"><option value="30">Last 30 days</option><option value="60">Last 60 days</option><option value="90">Last 90 days</option><option value="all">All time</option></select></label>
             <button id="refreshAnalytics" class="button secondary" type="button">Refresh</button>
@@ -362,14 +362,10 @@
       </main>
 
       <main id="applicationsView" class="applications-view" hidden>
-        <section class="command-heading">
-          <div>
-            <p class="eyebrow">Application Board · Grouped opportunities</p>
-            <h2>Applications</h2>
-            <p>Related email evidence is grouped into one application. Cold outreach remains Outreach; Ghosted requires an established back-and-forth conversation whose latest email was sent by you and remained unanswered past the waiting period.</p>
-          </div>
+        <section class="page-toolbar">
+          <div id="boardApplicationsNavHost" class="page-subnav-strip"></div>
           <div class="board-heading-actions">
-            <select id="applicationStatus" aria-label="Filter applications by lifecycle status"><option value="all">All statuses</option><option value="outreach">Outreach</option><option value="applied">Applied</option><option value="reply_needed">Reply needed</option><option value="interview_assessment">Interview / assessment</option><option value="offer">Offer</option><option value="rejected">Rejected</option><option value="ghosted">Ghosted</option></select>
+            <select id="applicationStatus" aria-label="Filter applications by lifecycle status"><option value="all">All statuses</option><option value="outreach">Outreach</option><option value="applied">Applied</option><option value="reply_needed">Reply needed</option><option value="information_needed">Information needed</option><option value="interview_assessment">Interview / assessment</option><option value="offer">Offer</option><option value="rejected">Rejected</option><option value="ghosted">Ghosted</option></select>
             <button id="refreshApplications" class="button secondary" type="button">Refresh</button>
           </div>
         </section>
@@ -386,18 +382,16 @@
 
       <main id="aiView" class="ai-view" hidden>
         <section id="aiBrainWorkspace" class="ai-workspace">
-          <section class="command-heading">
-            <div>
-              <p class="eyebrow">AI Brain · Lane intelligence</p>
-              <h2>Review a complete decision lane</h2>
-              <p>Use GPT-4o Mini as a structured second-stage reviewer across a full high-value lane. Jev remains preserved, while AI flags reclassifications and possible duplicate application relationships for confirmation.</p>
+          <section class="page-toolbar">
+            <div id="aiBrainNavHost" class="page-subnav-strip"></div>
+            <div class="command-heading-actions inline-heading-actions">
+              <button id="refreshAi" class="button secondary" type="button">Refresh workspace</button>
             </div>
-            <button id="refreshAi" class="button secondary" type="button">Refresh workspace</button>
           </section>
           <section class="command-panel ai-brain-control">
             <div class="ai-brain-copy"><span class="brain-orbit" aria-hidden="true"><i></i><i></i><i></i></span><div><h3>Lane reclassifier</h3><p>Review every decision in one lane with the same strict JSON contract, then inspect disagreements and relationship matches.</p></div></div>
             <div class="ai-brain-fields">
-              <label><span>Lane</span><select id="aiLaneSelect"><option value="reply_needed">Reply Needed</option><option value="interview_assessment">Interview / Assessment</option><option value="offer">Offer</option></select></label>
+              <label><span>Lane</span><select id="aiLaneSelect"><option value="reply_needed">Reply Needed</option><option value="information_needed">Information Needed</option><option value="interview_assessment">Interview / Assessment</option><option value="offer">Offer</option></select></label>
               <label><span>Scope</span><select id="aiLaneScope"><option value="pending">Only awaiting AI</option><option value="all">Review entire lane again</option></select></label>
               <label><span>Model</span><select id="aiReviewModel" aria-label="AI review model"></select></label>
               <button id="runAiLane" class="button primary" type="button">Review selected lane</button>
@@ -418,16 +412,42 @@
           </section>
         </section>
         <section id="aiChatWorkspace" class="ai-workspace" hidden>
-          <section class="command-heading">
-            <div><p class="eyebrow">AI Chat · Mailbox questions</p><h2>Ask across your job search</h2><p>This separate workspace will become the conversational layer over applications, decisions, replies, and cited email evidence.</p></div>
+          <section class="page-toolbar">
+            <div id="aiChatNavHost" class="page-subnav-strip"></div>
           </section>
           <section class="command-panel ai-chat-shell">
-            <div class="panel-heading"><div><h3>AI Chat</h3><small>Read-only mailbox conversation is the next integration</small></div><span class="ai-coming-soon">Preview</span></div>
-            <div class="chat-preview">
-              <div class="chat-message assistant">Ask questions across applications, replies, and outcomes from one place.</div>
-              <div class="chat-suggestion-row"><span>How many interviews are active?</span><span>What needs a reply today?</span><span>Show my starred applications</span></div>
+            <aside class="chat-sidebar">
+              <div class="chat-sidebar-header">
+                <div><strong>Chats</strong><small>Saved in Supabase</small></div>
+                <button id="newAiChat" class="button primary" type="button">+ New chat</button>
+              </div>
+              <section class="chat-history-section"><h4>Recent</h4><div id="aiChatRecentList" class="chat-history-list"><p>Loading chats…</p></div></section>
+              <section class="chat-history-section archived"><h4>Closed</h4><div id="aiChatArchivedList" class="chat-history-list"><p>No closed chats</p></div></section>
+              <p class="chat-sidebar-note">Close archives a chat. Its history remains available by chat ID.</p>
+            </aside>
+            <div class="chat-main">
+              <header class="chat-toolbar">
+                <div><span class="chat-online-dot"></span><strong id="aiChatConversationTitle">New chat</strong><small id="aiChatConversationId">Jev-routed · account scoped</small></div>
+                <div class="chat-toolbar-actions"><span id="aiChatRouteState" class="chat-route-state">Ready</span><button id="closeAiChat" class="button subtle" type="button">Close chat</button><button id="deleteAiChat" class="button subtle danger" type="button" hidden>Delete</button></div>
+              </header>
+              <div id="aiChatMessages" class="chat-log" aria-live="polite">
+                <section class="chat-welcome">
+                  <div class="chat-welcome-icon">J</div>
+                  <h3>What do you want to know?</h3>
+                  <p>Ask naturally. I’ll query Supabase only when the answer actually depends on your mailbox.</p>
+                </section>
+              </div>
+              <div class="chat-suggestion-row">
+                <button type="button" data-chat-suggestion="How many applications do I have in each status?"><strong>Applications by status</strong><span>Compare every active lane</span></button>
+                <button type="button" data-chat-suggestion="How many applications have I made to Verizon?"><strong>Company lookup</strong><span>Count roles at Verizon</span></button>
+                <button type="button" data-chat-suggestion="Which applications currently need a reply?"><strong>Needs attention</strong><span>Find reply-needed work</span></button>
+              </div>
+              <form id="aiChatForm" class="chat-composer">
+                <input id="aiChatInput" type="text" maxlength="2000" autocomplete="off" placeholder="Ask about applications, interviews, companies, or outcomes…" />
+                <button id="aiChatSend" class="button primary" type="submit" aria-label="Send question">Ask <span aria-hidden="true">↗</span></button>
+              </form>
+              <p id="aiChatStatus" class="chat-status">Queries are account-scoped and cannot modify data.</p>
             </div>
-            <div class="chat-composer"><input type="text" disabled placeholder="Mailbox chat will be connected next" /><button class="button primary" type="button" disabled>Send</button></div>
           </section>
         </section>
       </main>

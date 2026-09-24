@@ -60,6 +60,11 @@ export class GmailIngestionOrchestrator {
     return this.job ? structuredClone(this.job) : null;
   }
 
+  async waitForCompletion(): Promise<IngestionJobSnapshot | null> {
+    await this.activeTask;
+    return this.current();
+  }
+
   start(execute: IngestionExecutor): IngestionJobSnapshot {
     if (this.activeTask) throw new Error("A Gmail ingestion job is already running");
     const now = new Date().toISOString();

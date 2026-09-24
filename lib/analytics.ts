@@ -128,6 +128,7 @@ export function buildAnalyticsSnapshot(
     "applied",
     "outreach",
     "reply_needed",
+    "information_needed",
     "interview_assessment",
     "offer",
     "rejected",

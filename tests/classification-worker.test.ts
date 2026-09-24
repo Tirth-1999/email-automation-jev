@@ -4,6 +4,7 @@ import {
   mapConcurrent,
   terminalRunStatus,
   validateClassificationConfig,
+  validateSelectionOptions,
   type ClassificationWorkerConfig,
 } from "../lib/classification-worker.js";
 
@@ -28,6 +29,21 @@ test("worker configuration enforces production safety bounds", () => {
     () => validateClassificationConfig(config({ minimumTopProbability: 1.1 })),
     /between 0 and 1/,
   );
+});
+
+test("a destructive all-scope run cannot rebuild only part of the mailbox", () => {
+  assert.doesNotThrow(() => validateSelectionOptions({ scope: "all" }));
+  assert.doesNotThrow(() => validateSelectionOptions({ scope: "all", resetExisting: false }));
+  assert.throws(
+    () => validateSelectionOptions({ scope: "all", maximum: 25 }),
+    /cannot be combined with limit, date, or email-id filters/,
+  );
+  assert.throws(() => validateSelectionOptions({ scope: "all", after: "2026-01-01" }), /full-mailbox/);
+  assert.throws(
+    () => validateSelectionOptions({ scope: "unclassified", resetExisting: true }),
+    /requires the entire-mailbox scope/,
+  );
+  assert.doesNotThrow(() => validateSelectionOptions({ scope: "unclassified", maximum: 25 }));
 });
 
 test("bounded mapper never exceeds configured concurrency", async () => {

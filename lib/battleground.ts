@@ -183,7 +183,7 @@ export function calculateBattlegroundMetrics(
     successful_throughput_per_second: rounded(
       classificationMs > 0 ? succeeded / (classificationMs / 1_000) : 0,
     ),
-    success_rate: rounded(completed ? succeeded / completed : 0),
+    success_rate: completed ? Math.round((succeeded / completed) * 10_000) / 10_000 : 0,
     rate_limited_count: rateLimited,
     average_jev_ms: rounded(jevTimes.length ? totalJev / jevTimes.length : 0),
     p50_jev_ms: rounded(percentile(jevTimes, 0.5)),

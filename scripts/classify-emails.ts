@@ -52,7 +52,14 @@ Create a durable run:
   --model MODEL
 
 Resume only the queued rows in an existing run:
-  --run-id RUN_UUID`);
+  --run-id RUN_UUID
+
+Important:
+  --scope all is a destructive fresh rebuild for the selected Gmail account.
+  It deletes prior classification runs/results and clears current human and AI
+  classification overrides before creating the new run. Saved drafts, stars,
+  and the private human-labeled evaluation JSON are preserved. Full scope cannot
+  be combined with --limit, --after, or --before.`);
   process.exit(0);
 }
 

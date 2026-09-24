@@ -18,6 +18,7 @@ export function humanLabelImportRows(emails: LabeledEmail[]): HumanLabelInput[] 
     "applied",
     "outreach",
     "reply_needed",
+    "information_needed",
     "interview_assessment",
     "offer",
     "rejected",

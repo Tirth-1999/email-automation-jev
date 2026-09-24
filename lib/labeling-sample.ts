@@ -23,6 +23,7 @@ export const LABEL_CATEGORIES = [
   "applied",
   "outreach",
   "reply_needed",
+  "information_needed",
   "interview_assessment",
   "offer",
   "rejected",
@@ -77,7 +78,7 @@ export function selectLabelingSample(
   return selected;
 }
 
-const discoveryPattern = /\b(reply|respond|response|action required|action needed|next steps?|additional (questions?|information)|right to represent|representation|send (me )?(your )?(updated )?resume|interview|screening|schedule|meeting|call|assessment|test|case study|challenge|exercise|puzzle|offer|decision|rejected|not moving forward)\b/i;
+const discoveryPattern = /\b(reply|respond|response|action required|action needed|next steps?|additional (questions?|information|details)|missing information|EEO|WOTC|self[- ]identification|demographic|work authorization|eligibility|questionnaire|fill (?:in|out)|complete (?:this|the) form|candidate experience|application experience|interview feedback|feedback survey|tell us about your experience|right to represent|representation|send (me )?(your )?(updated )?resume|interview|screening|schedule|meeting|call|assessment|test|case study|challenge|exercise|puzzle|offer|decision|rejected|not moving forward)\b/i;
 
 function discoveryCandidate(email: LabelingEmail): boolean {
   if (email.direction === "outgoing") return true;

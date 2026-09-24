@@ -7,8 +7,40 @@ import type {
 
 type DatabaseClient = SupabaseClient;
 
+export interface FullClassificationResetResult {
+  classification_runs_deleted: number;
+  classification_results_deleted: number;
+  email_overrides_cleared: number;
+  applications_reset: number;
+  manual_links_deleted: number;
+  manual_events_deleted: number;
+}
+
 function assertNoError(error: { message: string } | null, context: string): void {
   if (error) throw new Error(`${context}: ${error.message}`);
+}
+
+export async function resetAccountClassificationState(
+  database: DatabaseClient,
+  accountId: string,
+): Promise<FullClassificationResetResult> {
+  const { data, error } = await database.rpc("reset_account_classification_state", {
+    p_account_id: accountId,
+  });
+  if (error) {
+    throw new Error(
+      `Could not reset prior classification state. Apply migration 015 first. ${error.message}`,
+    );
+  }
+  const result = (data || {}) as Partial<FullClassificationResetResult>;
+  return {
+    classification_runs_deleted: Number(result.classification_runs_deleted || 0),
+    classification_results_deleted: Number(result.classification_results_deleted || 0),
+    email_overrides_cleared: Number(result.email_overrides_cleared || 0),
+    applications_reset: Number(result.applications_reset || 0),
+    manual_links_deleted: Number(result.manual_links_deleted || 0),
+    manual_events_deleted: Number(result.manual_events_deleted || 0),
+  };
 }
 
 export function sanitizedClassificationError(error: unknown): string {
