@@ -149,7 +149,7 @@ const activeClassificationRuns = new Map<string, Promise<void>>();
 let activeBattleground: Promise<void> | null = null;
 let battlegroundReport: BattlegroundReport | null = null;
 const gmailIngestion = new GmailIngestionOrchestrator();
-type OutputRefreshStatus = "queued" | "running" | "succeeded" | "failed";
+type OutputRefreshStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 interface OutputRefreshJob {
   status: OutputRefreshStatus;
   stage: string;
@@ -159,18 +159,20 @@ interface OutputRefreshJob {
   finished_at: string | null;
   result: ApplicationMaterializationResult | null;
   error: string | null;
+  cancellation_requested_at: string | null;
 }
 let outputRefresh: OutputRefreshJob | null = null;
 let activeOutputRefresh: Promise<void> | null = null;
-type ManualPipelineStage = "queued" | "ingestion" | "classification" | "publication" | "complete" | "failed";
+type ManualPipelineStage = "queued" | "ingestion" | "classification" | "publication" | "complete" | "failed" | "cancelled";
 interface ManualPipelineJob {
   id: string;
-  status: "queued" | "running" | "succeeded" | "failed";
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   stage: ManualPipelineStage;
   classification_run_id: string | null;
   started_at: string | null;
   finished_at: string | null;
   error: string | null;
+  cancellation_requested_at: string | null;
 }
 let manualPipeline: ManualPipelineJob | null = null;
 let activeManualPipeline: Promise<void> | null = null;
@@ -424,7 +426,29 @@ async function automationAccountState(accountId: string): Promise<Record<string,
     if (isMissingOperationsMigration(error)) return null;
     throw new Error(`Could not load automation state: ${error.message}`);
   }
-  return data as Record<string, unknown>;
+  const state = data as Record<string, unknown>;
+  const successResult = await database
+    .from("gmail_accounts")
+    .select("last_automation_succeeded_at")
+    .eq("id", accountId)
+    .single();
+  if (successResult.error) {
+    const missingSuccessColumn = successResult.error.code === "42703"
+      || successResult.error.code === "PGRST204"
+      || /last_automation_succeeded_at|schema cache/i.test(successResult.error.message || "");
+    if (!missingSuccessColumn) throw new Error(`Could not load last successful automation: ${successResult.error.message}`);
+    return {
+      ...state,
+      last_automation_succeeded_at:
+        state.last_automation_status === "succeeded" ? state.last_automation_completed_at : null,
+      success_timestamp_ready: false,
+    };
+  }
+  return {
+    ...state,
+    ...(successResult.data as Record<string, unknown>),
+    success_timestamp_ready: true,
+  };
 }
 
 async function automationLockActive(accountId: string): Promise<boolean> {
@@ -751,40 +775,53 @@ function startOutputRefresh(sourceRunId: string | null = null): OutputRefreshJob
     finished_at: null,
     result: null,
     error: null,
+    cancellation_requested_at: null,
+  };
+  const job = outputRefresh;
+  const ensureActive = () => {
+    if (job.cancellation_requested_at) throw new Error("OUTPUT_REFRESH_CANCELLED");
   };
   activeOutputRefresh = Promise.resolve()
     .then(async () => {
-      if (!outputRefresh) return;
-      outputRefresh.status = "running";
-      outputRefresh.stage = "loading_classifications";
-      outputRefresh.progress_percent = 8;
-      outputRefresh.started_at = new Date().toISOString();
-      outputRefresh.result = await materializeApplications(database, {
+      ensureActive();
+      job.status = "running";
+      job.stage = "loading_classifications";
+      job.progress_percent = 8;
+      job.started_at = new Date().toISOString();
+      job.result = await materializeApplications(database, {
         onProgress: ({ stage, percent }) => {
-          if (!outputRefresh) return;
-          outputRefresh.stage = stage;
-          outputRefresh.progress_percent = percent;
+          ensureActive();
+          job.stage = stage;
+          job.progress_percent = percent;
         },
       });
-      outputRefresh.stage = "building_analytics";
-      outputRefresh.progress_percent = 96;
+      ensureActive();
+      job.stage = "building_analytics";
+      job.progress_percent = 96;
       await Promise.all([
         refreshAnalyticsSnapshots(),
         refreshApplicationBoardSnapshot(),
         refreshAiReviewSnapshot(),
         analyticsSnapshotCache.delete([commandCenterCacheKey]),
       ]);
-      outputRefresh.status = "succeeded";
-      outputRefresh.stage = "complete";
-      outputRefresh.progress_percent = 100;
-      outputRefresh.finished_at = new Date().toISOString();
+      ensureActive();
+      job.status = "succeeded";
+      job.stage = "complete";
+      job.progress_percent = 100;
+      job.finished_at = new Date().toISOString();
     })
     .catch((error: unknown) => {
-      if (!outputRefresh) return;
-      outputRefresh.status = "failed";
-      outputRefresh.stage = "failed";
-      outputRefresh.error = error instanceof Error ? error.message : String(error);
-      outputRefresh.finished_at = new Date().toISOString();
+      if (job.cancellation_requested_at) {
+        job.status = "cancelled";
+        job.stage = "cancelled";
+        job.error = null;
+        job.finished_at = new Date().toISOString();
+        return;
+      }
+      job.status = "failed";
+      job.stage = "failed";
+      job.error = error instanceof Error ? error.message : String(error);
+      job.finished_at = new Date().toISOString();
       console.error("Output refresh failed:", error);
     })
     .finally(() => {
@@ -793,7 +830,14 @@ function startOutputRefresh(sourceRunId: string | null = null): OutputRefreshJob
   return outputRefresh;
 }
 
-function startManualPipeline(): ManualPipelineJob {
+function cancelOutputRefresh(): boolean {
+  if (!activeOutputRefresh || !outputRefresh) return false;
+  outputRefresh.cancellation_requested_at ||= new Date().toISOString();
+  outputRefresh.stage = "stopping";
+  return true;
+}
+
+function startManualPipeline(config: ClassificationWorkerConfig = workerConfig({})): ManualPipelineJob {
   manualPipeline = {
     id: randomUUID(),
     status: "queued",
@@ -802,21 +846,26 @@ function startManualPipeline(): ManualPipelineJob {
     started_at: null,
     finished_at: null,
     error: null,
+    cancellation_requested_at: null,
   };
   const job = manualPipeline;
+  const ensureActive = () => {
+    if (job.cancellation_requested_at) throw new Error("MANUAL_PIPELINE_CANCELLED");
+  };
   activeManualPipeline = Promise.resolve()
     .then(async () => {
+      ensureActive();
       job.status = "running";
       job.started_at = new Date().toISOString();
 
       job.stage = "ingestion";
       startGmailIngestion();
       const ingestion = await gmailIngestion.waitForCompletion();
+      ensureActive();
       if (ingestion?.status !== "succeeded") throw new Error(ingestion?.error || "Gmail sync failed");
 
       job.stage = "classification";
       outputRefresh = null;
-      const config = workerConfig({});
       const created = await createProductionClassificationRun(
         database,
         await primaryAccountId(),
@@ -826,6 +875,7 @@ function startManualPipeline(): ManualPipelineJob {
       job.classification_run_id = created.run.id;
       const classified = await runClassification(database, created.run.id, config);
       invalidateReadCaches();
+      ensureActive();
       if (!["succeeded", "partial"].includes(classified.status)) {
         throw new Error(classified.error_message || `Jev classification ${classified.status}`);
       }
@@ -833,12 +883,19 @@ function startManualPipeline(): ManualPipelineJob {
       job.stage = "publication";
       const publication = startOutputRefresh(classified.id);
       await activeOutputRefresh;
+      ensureActive();
       if (publication.status !== "succeeded") throw new Error(publication.error || "Output publication failed");
 
       job.status = "succeeded";
       job.stage = "complete";
     })
     .catch((error: unknown) => {
+      if (job.cancellation_requested_at) {
+        job.status = "cancelled";
+        job.stage = "cancelled";
+        job.error = null;
+        return;
+      }
       job.status = "failed";
       job.stage = "failed";
       job.error = error instanceof Error ? error.message : String(error);
@@ -849,6 +906,18 @@ function startManualPipeline(): ManualPipelineJob {
       activeManualPipeline = null;
     });
   return job;
+}
+
+async function cancelManualPipeline(): Promise<boolean> {
+  const job = manualPipeline;
+  if (!activeManualPipeline || !job) return false;
+  job.cancellation_requested_at ||= new Date().toISOString();
+  if (job.stage === "ingestion") gmailIngestion.cancel();
+  if (job.stage === "classification" && job.classification_run_id) {
+    await requestClassificationCancellation(database, job.classification_run_id);
+  }
+  if (job.stage === "publication") cancelOutputRefresh();
+  return true;
 }
 
 function battlegroundConfig(input: Record<string, unknown>): BattlegroundConfig {
@@ -1367,7 +1436,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       json(response, 409, { error: "The scheduled mailbox pipeline is currently running" });
       return;
     }
-    json(response, 202, { pipeline: startManualPipeline() });
+    const input = await body(request);
+    const config = workerConfig(input);
+    json(response, 202, { pipeline: startManualPipeline(config) });
     return;
   }
   if (request.method === "GET" && path === "/api/operations/health") {
@@ -1388,6 +1459,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       last_cycle_status: automation.last_automation_status || null,
       last_cycle_started_at: automation.last_automation_started_at || null,
       last_cycle_completed_at: automation.last_automation_completed_at || null,
+      last_successful_cycle_at: automation.last_automation_succeeded_at || null,
       last_cycle_metrics: automation.last_automation_metrics || {},
       error: automation.last_automation_error || account.last_error || null,
       mailbox: snapshot.mailbox,
@@ -1460,6 +1532,40 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     await requestClassificationCancellation(database, runId);
     json(response, 202, { run_id: runId, cancellation_requested: true });
+    return;
+  }
+  if (request.method === "POST" && path === "/api/command/cancel-active") {
+    const input = await body(request);
+    const target = typeof input.target === "string" ? input.target : "";
+    if (!["pipeline", "ingestion", "classification", "outputs"].includes(target)) {
+      json(response, 400, { error: "target must be pipeline, ingestion, classification, or outputs" });
+      return;
+    }
+    if (activeManualPipeline) {
+      await cancelManualPipeline();
+      json(response, 202, { target: "pipeline", cancellation_requested: true });
+      return;
+    }
+    if (target === "ingestion" && gmailIngestion.cancel()) {
+      json(response, 202, { target, cancellation_requested: true });
+      return;
+    }
+    if (target === "classification") {
+      const runId = activeClassificationRuns.keys().next().value as string | undefined;
+      const activeRun = runId
+        ? { id: runId }
+        : (await listRecentClassificationRuns(database, 5)).find((run) => run.status === "queued" || run.status === "running");
+      if (activeRun) {
+        await requestClassificationCancellation(database, activeRun.id);
+        json(response, 202, { target, run_id: activeRun.id, cancellation_requested: true });
+        return;
+      }
+    }
+    if (target === "outputs" && cancelOutputRefresh()) {
+      json(response, 202, { target, cancellation_requested: true });
+      return;
+    }
+    json(response, 409, { error: `No active ${target} job is available to cancel` });
     return;
   }
   if (request.method === "POST" && path === "/api/command/resume") {

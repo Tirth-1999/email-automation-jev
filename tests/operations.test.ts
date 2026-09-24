@@ -65,7 +65,10 @@ test("automation failure is sanitized, persisted, and notified", async () => {
 });
 
 test("operations migration reuses existing tables and enforces private RPC access", async () => {
-  const migration = await readFile("supabase/migrations/007_operations_automation.sql", "utf8");
+  const [migration, successMigration] = await Promise.all([
+    readFile("supabase/migrations/007_operations_automation.sql", "utf8"),
+    readFile("supabase/migrations/018_last_successful_automation.sql", "utf8"),
+  ]);
   assert.doesNotMatch(migration, /create table/i);
   assert.match(migration, /try_acquire_pipeline_lock/);
   assert.match(migration, /not exists[\s\S]*classification_runs/);
@@ -73,4 +76,9 @@ test("operations migration reuses existing tables and enforces private RPC acces
   assert.match(migration, /reply_draft_status/);
   assert.match(migration, /add column if not exists pipeline_lock_id/);
   assert.match(migration, /notify pgrst, 'reload schema'/);
+  assert.doesNotMatch(successMigration, /create table/i);
+  assert.match(successMigration, /add column if not exists last_automation_succeeded_at/);
+  assert.match(successMigration, /when p_status = 'succeeded' then now\(\)/);
+  assert.match(successMigration, /else account\.last_automation_succeeded_at/);
+  assert.match(successMigration, /grant execute[\s\S]*service_role/);
 });

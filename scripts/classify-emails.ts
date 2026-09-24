@@ -46,8 +46,8 @@ Create a durable run:
   --after ISO_TIMESTAMP
   --before ISO_TIMESTAMP
   --threshold 0..1
-  --concurrency 1..10
-  --batch-size 1..250
+  --concurrency 1..250
+  --batch-size 1..1000
   --max-retries 0..6
   --model MODEL
 

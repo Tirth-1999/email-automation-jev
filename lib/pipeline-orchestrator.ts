@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { IngestionLiveStats, IngestionResult } from "./ingest.js";
 
-export type PipelineJobStatus = "queued" | "running" | "succeeded" | "failed";
+export type PipelineJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface IngestionExecutionResult extends IngestionResult {
   gmailAddress: string;
@@ -18,6 +18,7 @@ export interface IngestionJobSnapshot {
   stats: IngestionLiveStats;
   result: IngestionExecutionResult | null;
   error: string | null;
+  cancellation_requested_at: string | null;
 }
 
 export type IngestionProgressReporter = (
@@ -65,6 +66,13 @@ export class GmailIngestionOrchestrator {
     return this.current();
   }
 
+  cancel(): boolean {
+    if (!this.activeTask || !this.job) return false;
+    this.job.cancellation_requested_at ||= new Date().toISOString();
+    this.job.message = "Stopping Gmail sync after the current request";
+    return true;
+  }
+
   start(execute: IngestionExecutor): IngestionJobSnapshot {
     if (this.activeTask) throw new Error("A Gmail ingestion job is already running");
     const now = new Date().toISOString();
@@ -78,17 +86,21 @@ export class GmailIngestionOrchestrator {
       stats: initialStats(),
       result: null,
       error: null,
+      cancellation_requested_at: null,
     };
     const job = this.job;
     this.activeTask = Promise.resolve()
       .then(async () => {
+        if (job.cancellation_requested_at) throw new Error("INGESTION_CANCELLED");
         job.status = "running";
         job.started_at = new Date().toISOString();
         job.message = "Connecting to Gmail";
         const result = await execute((message, stats = {}) => {
+          if (job.cancellation_requested_at) throw new Error("INGESTION_CANCELLED");
           job.message = message;
           job.stats = { ...job.stats, ...stats };
         });
+        if (job.cancellation_requested_at) throw new Error("INGESTION_CANCELLED");
         job.result = result;
         job.stats = { ...job.stats, ...result.counts, stage: "finalizing", pending: 0 };
         job.status = "succeeded";
@@ -97,6 +109,12 @@ export class GmailIngestionOrchestrator {
           : "Mailbox is already up to date";
       })
       .catch((error: unknown) => {
+        if (job.cancellation_requested_at) {
+          job.status = "cancelled";
+          job.error = null;
+          job.message = "Gmail sync cancelled";
+          return;
+        }
         job.status = "failed";
         job.error = errorMessage(error);
         job.message = `Gmail sync failed: ${job.error}`;

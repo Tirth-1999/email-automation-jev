@@ -60,7 +60,15 @@ test("Command Center exposes guarded incremental, full-history, and fresh-replac
   assert.match(html, /New emails only/);
   assert.match(html, /Entire mailbox/);
   assert.match(html, /Drop old records \+ save fresh/);
+  assert.match(html, /commandClassificationConcurrency/);
+  assert.match(html, /commandClassificationBatchSize/);
+  assert.match(html, /cancelCommandIngestion/);
+  assert.match(html, /cancelCommandClassification/);
+  assert.match(html, /cancelCommandOutputs/);
   assert.match(browser, /replace_existing/);
+  assert.match(browser, /cancelCommandJob/);
   assert.match(browser, /window\.confirm/);
   assert.match(server, /resetExisting: scopeValue === "all"/);
+  assert.match(server, /\/api\/command\/cancel-active/);
+  assert.match(server, /cancelManualPipeline/);
 });

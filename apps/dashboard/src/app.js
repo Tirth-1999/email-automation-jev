@@ -56,10 +56,14 @@ const commandRunProgressLabel = document.querySelector("#commandRunProgressLabel
 const commandClassificationProgress = document.querySelector("#commandClassificationProgress");
 const commandClassificationScope = document.querySelector("#commandClassificationScope");
 const commandClassificationResultMode = document.querySelector("#commandClassificationResultMode");
+const commandClassificationConcurrency = document.querySelector("#commandClassificationConcurrency");
+const commandClassificationBatchSize = document.querySelector("#commandClassificationBatchSize");
 const commandClassificationPolicy = document.querySelector("#commandClassificationPolicy");
 const commandCorrectionCount = document.querySelector("#commandCorrectionCount");
 const syncNewEmails = document.querySelector("#syncNewEmails");
+const cancelCommandIngestion = document.querySelector("#cancelCommandIngestion");
 const startCommandClassification = document.querySelector("#startCommandClassification");
+const cancelCommandClassification = document.querySelector("#cancelCommandClassification");
 const ingestionStep = document.querySelector("#ingestionStep");
 const classificationStep = document.querySelector("#classificationStep");
 const outputStep = document.querySelector("#outputStep");
@@ -67,6 +71,7 @@ const commandOutputState = document.querySelector("#commandOutputState");
 const commandBoardCount = document.querySelector("#commandBoardCount");
 const commandApplicationCount = document.querySelector("#commandApplicationCount");
 const refreshCommandOutputs = document.querySelector("#refreshCommandOutputs");
+const cancelCommandOutputs = document.querySelector("#cancelCommandOutputs");
 const runCommandPipeline = document.querySelector("#runCommandPipeline");
 const commandOutputProgress = document.querySelector("#commandOutputProgress");
 const pipelineSteps = [...document.querySelectorAll("[data-pipeline-step]")];
@@ -2689,8 +2694,8 @@ function commandPayload() {
     after: null,
     before: null,
     minimum_top_probability: 0.6,
-    concurrency: 5,
-    batch_size: 25,
+    concurrency: Number(commandClassificationConcurrency.value),
+    batch_size: Number(commandClassificationBatchSize.value),
   };
 }
 
@@ -2815,6 +2820,7 @@ function setPipelineStepState(step, badge, status) {
   step.classList.toggle("is-running", status === "queued" || status === "running");
   step.classList.toggle("is-complete", status === "succeeded");
   step.classList.toggle("is-error", status === "failed" || status === "partial");
+  step.classList.toggle("is-cancelled", status === "cancelled");
   badge.className = `pipeline-state ${status || "waiting"}`;
   badge.textContent = status ? displayCategory(status) : "Waiting";
 }
@@ -2854,28 +2860,43 @@ function renderCommandPipeline(snapshot) {
     selectPipelineStep("outputs");
   }
 
+  const automationInterval = Number(automation.interval_minutes || 60);
+  const automationCadence = automationInterval === 60
+    ? "Hourly"
+    : automationInterval % 60 === 0
+      ? `Every ${automationInterval / 60} hours`
+      : `Every ${automationInterval} minutes`;
+  const lastSuccessfulAt = automation.last_automation_succeeded_at
+    || (automation.last_automation_status === "succeeded" ? automation.last_automation_completed_at : null);
+  const lastSuccessLabel = lastSuccessfulAt
+    ? new Date(lastSuccessfulAt).toLocaleString()
+    : "No successful run yet";
   automationHealth.className = `automation-health ${automation.last_automation_status || (automation.migration_ready ? "ready" : "unavailable")}`;
   if (!automation.migration_ready) {
     automationHealthTitle.textContent = "Automation migration required";
     automationHealthDetail.textContent = "Apply migration 007 before starting the hourly scheduler.";
     automationHealthMetric.textContent = "Setup needed";
   } else if (automation.last_automation_status === "running") {
-    automationHealthTitle.textContent = "Scheduled pipeline is running";
-    automationHealthDetail.textContent = `Started ${new Date(automation.last_automation_started_at).toLocaleString()}. Manual controls are temporarily locked.`;
-    automationHealthMetric.textContent = "In progress";
+    automationHealthTitle.textContent = `${automationCadence} pipeline is running`;
+    automationHealthDetail.textContent = `Started ${new Date(automation.last_automation_started_at).toLocaleString()}. Last successful run: ${lastSuccessLabel}.`;
+    automationHealthMetric.textContent = "Running now";
   } else if (automation.last_automation_status === "failed") {
-    automationHealthTitle.textContent = "Last scheduled cycle failed";
-    automationHealthDetail.textContent = automation.last_automation_error || "Inspect server logs for the failed stage.";
-    automationHealthMetric.textContent = automation.last_automation_completed_at ? new Date(automation.last_automation_completed_at).toLocaleString() : "Needs attention";
+    automationHealthTitle.textContent = `${automationCadence} pipeline needs attention`;
+    automationHealthDetail.textContent = `${automation.last_automation_error || "Inspect server logs for the failed stage."} Last successful run: ${lastSuccessLabel}.`;
+    automationHealthMetric.textContent = automation.last_automation_completed_at
+      ? `Failed ${new Date(automation.last_automation_completed_at).toLocaleString()}`
+      : "Needs attention";
   } else if (automation.last_automation_status === "succeeded") {
     const metrics = automation.last_automation_metrics || {};
-    automationHealthTitle.textContent = "Hourly pipeline healthy";
+    automationHealthTitle.textContent = `${automationCadence} pipeline healthy`;
     automationHealthDetail.textContent = `${Number(metrics.emails_inserted || 0).toLocaleString()} new · ${Number(metrics.emails_classified || 0).toLocaleString()} classified · ${Number(metrics.applications_published || 0).toLocaleString()} applications`;
-    automationHealthMetric.textContent = automation.last_automation_completed_at ? `Last run ${new Date(automation.last_automation_completed_at).toLocaleString()}` : "Healthy";
+    automationHealthMetric.textContent = `Last success ${lastSuccessLabel}`;
   } else {
-    automationHealthTitle.textContent = "Hourly automation ready";
-    automationHealthDetail.textContent = automation.enabled ? `Configured every ${Number(automation.interval_minutes || 60)} minutes; waiting for its first cycle.` : "Run npm run scheduler or deploy automate:once as an hourly job.";
-    automationHealthMetric.textContent = automation.enabled ? "Enabled" : "Manual mode";
+    automationHealthTitle.textContent = automation.enabled ? `${automationCadence} automation ready` : "Scheduled automation is off";
+    automationHealthDetail.textContent = automation.enabled
+      ? `The scheduler is enabled. Last successful run: ${lastSuccessLabel}.`
+      : "Run npm run scheduler or deploy automate:once to enable recurring operation.";
+    automationHealthMetric.textContent = automation.enabled ? lastSuccessLabel : "Manual mode";
   }
 
   commandAccount.textContent = account.gmail_address || "Connected mailbox";
@@ -2938,6 +2959,8 @@ function renderCommandPipeline(snapshot) {
   const classificationControlsLocked = ingestionRunning || classificationRunning || automationRunning || manualPipelineRunning;
   commandClassificationScope.disabled = classificationControlsLocked;
   commandClassificationResultMode.disabled = classificationControlsLocked || !fullMailboxRun;
+  commandClassificationConcurrency.disabled = classificationControlsLocked;
+  commandClassificationBatchSize.disabled = classificationControlsLocked;
   commandClassificationPolicy.textContent = !fullMailboxRun
     ? "Existing classifications and corrections stay unchanged."
     : replaceExisting
@@ -2952,16 +2975,30 @@ function renderCommandPipeline(snapshot) {
         ? `${replaceExisting ? "Replace" : "Reclassify"} ${selectedEmailCount.toLocaleString()} emails`
         : `Classify ${selectedEmailCount.toLocaleString()} new emails`;
   const outputRunning = outputs?.status === "queued" || outputs?.status === "running";
+  const pipelineIngestionRunning = manualPipelineRunning && pipeline?.stage === "ingestion";
+  const pipelineClassificationRunning = manualPipelineRunning && pipeline?.stage === "classification";
+  const pipelineOutputRunning = manualPipelineRunning && pipeline?.stage === "publication";
+  cancelCommandIngestion.hidden = !(ingestionRunning || pipelineIngestionRunning);
+  cancelCommandClassification.hidden = !(classificationRunning || pipelineClassificationRunning);
+  cancelCommandOutputs.hidden = !(outputRunning || pipelineOutputRunning);
   refreshCommandOutputs.disabled = ingestionRunning || classificationRunning || automationRunning || manualPipelineRunning || unclassifiedCount > 0 || outputRunning || Number(mailbox.classified_emails || 0) === 0;
   refreshCommandOutputs.textContent = outputRunning ? "Publishing outputs…" : "Publish latest results";
-  runCommandPipeline.disabled = manualPipelineRunning || ingestionRunning || classificationRunning || outputRunning || automationRunning;
-  runCommandPipeline.textContent = manualPipelineRunning ? "Pipeline running…" : "Run pipeline";
+  runCommandPipeline.disabled = !manualPipelineRunning && (ingestionRunning || classificationRunning || outputRunning || automationRunning);
+  runCommandPipeline.textContent = manualPipelineRunning ? "Stop pipeline" : "Run pipeline";
+  runCommandPipeline.classList.toggle("primary", !manualPipelineRunning);
+  runCommandPipeline.classList.toggle("danger", manualPipelineRunning);
   if (outputs?.status === "failed" && outputs.error) {
     commandStatus.textContent = `Output refresh failed: ${outputs.error}`;
     commandStatus.classList.add("error");
   } else if (pipeline?.status === "failed") {
     commandStatus.textContent = `Pipeline failed: ${pipeline.error || "Unknown pipeline error"}`;
     commandStatus.classList.add("error");
+  } else if (pipeline?.status === "cancelled") {
+    commandStatus.classList.remove("error");
+    commandStatus.textContent = "Pipeline cancelled safely. Completed work remains saved.";
+  } else if (outputs?.status === "cancelled" || ingestion?.status === "cancelled") {
+    commandStatus.classList.remove("error");
+    commandStatus.textContent = `${outputs?.status === "cancelled" ? "Output publication" : "Gmail sync"} cancelled safely.`;
   } else if (pipeline?.status === "succeeded") {
     commandStatus.classList.remove("error");
     commandStatus.textContent = "Sync, Jev classification, and output publication completed successfully.";
@@ -2978,7 +3015,16 @@ async function startFullCommandPipeline() {
   commandStatus.textContent = "Starting Sync → Jev → Publish pipeline…";
   runCommandPipeline.disabled = true;
   try {
-    const response = await apiFetch("/api/command/pipeline", { method: "POST" });
+    const settings = commandPayload();
+    const response = await apiFetch("/api/command/pipeline", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        concurrency: settings.concurrency,
+        batch_size: settings.batch_size,
+        minimum_top_probability: settings.minimum_top_probability,
+      }),
+    });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not start the pipeline");
     if (latestCommandSnapshot) {
@@ -2992,6 +3038,35 @@ async function startFullCommandPipeline() {
   } finally {
     await loadCommandRuns();
   }
+}
+
+async function cancelCommandJob(target) {
+  commandStatus.classList.remove("error");
+  commandStatus.textContent = `Stopping ${target === "outputs" ? "output publication" : target} after the current safe checkpoint…`;
+  try {
+    const response = await apiFetch("/api/command/cancel-active", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Could not stop ${target}`);
+    commandStatus.textContent = "Cancellation requested. In-flight API calls finish, then no new work starts.";
+  } catch (error) {
+    commandStatus.textContent = error instanceof Error ? error.message : String(error);
+    commandStatus.classList.add("error");
+  } finally {
+    await loadCommandRuns();
+  }
+}
+
+async function handleCommandPipelineAction() {
+  const pipeline = latestCommandSnapshot?.pipeline;
+  if (pipeline?.status === "queued" || pipeline?.status === "running") {
+    await cancelCommandJob("pipeline");
+    return;
+  }
+  await startFullCommandPipeline();
 }
 
 async function publishCommandOutputs() {
@@ -3425,10 +3500,13 @@ async function initialize() {
       syncCommandClassificationOptions();
     });
     commandClassificationResultMode.addEventListener("change", syncCommandClassificationOptions);
-    runCommandPipeline.addEventListener("click", () => void startFullCommandPipeline());
+    runCommandPipeline.addEventListener("click", () => void handleCommandPipelineAction());
     syncNewEmails.addEventListener("click", () => void startGmailSync());
+    cancelCommandIngestion.addEventListener("click", () => void cancelCommandJob("ingestion"));
     startCommandClassification.addEventListener("click", () => void startCommandRun());
+    cancelCommandClassification.addEventListener("click", () => void cancelCommandJob("classification"));
     refreshCommandOutputs.addEventListener("click", () => void publishCommandOutputs());
+    cancelCommandOutputs.addEventListener("click", () => void cancelCommandJob("outputs"));
     for (const step of pipelineSteps) {
       const activate = () => selectPipelineStep(step.dataset.pipelineStep);
       step.addEventListener("click", activate);

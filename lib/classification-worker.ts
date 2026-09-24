@@ -73,11 +73,11 @@ const EMAIL_FIELDS = "id,direction,from_name,from_email,to_recipients,subject,sn
 const PAGE_SIZE = 1_000;
 
 export function validateClassificationConfig(config: ClassificationWorkerConfig): void {
-  if (!Number.isInteger(config.concurrency) || config.concurrency < 1 || config.concurrency > 10) {
-    throw new Error("concurrency must be an integer from 1 to 10");
+  if (!Number.isInteger(config.concurrency) || config.concurrency < 1 || config.concurrency > 250) {
+    throw new Error("concurrency must be an integer from 1 to 250");
   }
-  if (!Number.isInteger(config.batchSize) || config.batchSize < 1 || config.batchSize > 250) {
-    throw new Error("batchSize must be an integer from 1 to 250");
+  if (!Number.isInteger(config.batchSize) || config.batchSize < 1 || config.batchSize > 1_000) {
+    throw new Error("batchSize must be an integer from 1 to 1000");
   }
   if (!Number.isInteger(config.maxRetries) || config.maxRetries < 0 || config.maxRetries > 6) {
     throw new Error("maxRetries must be an integer from 0 to 6");

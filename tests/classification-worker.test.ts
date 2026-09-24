@@ -21,9 +21,10 @@ function config(overrides: Partial<ClassificationWorkerConfig> = {}): Classifica
 
 test("worker configuration enforces production safety bounds", () => {
   assert.doesNotThrow(() => validateClassificationConfig(config()));
-  assert.throws(() => validateClassificationConfig(config({ concurrency: 0 })), /1 to 10/);
-  assert.throws(() => validateClassificationConfig(config({ concurrency: 11 })), /1 to 10/);
-  assert.throws(() => validateClassificationConfig(config({ batchSize: 251 })), /1 to 250/);
+  assert.doesNotThrow(() => validateClassificationConfig(config({ concurrency: 250, batchSize: 1_000 })));
+  assert.throws(() => validateClassificationConfig(config({ concurrency: 0 })), /1 to 250/);
+  assert.throws(() => validateClassificationConfig(config({ concurrency: 251 })), /1 to 250/);
+  assert.throws(() => validateClassificationConfig(config({ batchSize: 1_001 })), /1 to 1000/);
   assert.throws(() => validateClassificationConfig(config({ maxRetries: 7 })), /0 to 6/);
   assert.throws(
     () => validateClassificationConfig(config({ minimumTopProbability: 1.1 })),

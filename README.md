@@ -274,7 +274,7 @@ npm run phase5:bootstrap
 
 ### Phase 6 — Classification worker and Command Center
 
-The worker is durable, resumable, bounded, and version-aware. Command Center exposes both scope and replacement policy.
+The worker is durable, resumable, bounded, and version-aware. Command Center exposes scope, replacement policy, concurrency (1–250), and batch size (1–1,000) in one configuration bar above the pipeline. Defaults remain conservative because high concurrency can trigger provider rate limits. Each active step can be cancelled safely: Gmail and publication stop at the next checkpoint, while Jev stops before scheduling the next batch and retains completed results.
 
 ```mermaid
 flowchart TB
@@ -289,6 +289,7 @@ flowchart TB
     Reset --> Queue
     Queue --> Batch["Bounded concurrent Jev batches"]
     Batch --> Save["One bulk write per completed batch"]
+    Batch -->|Cancel requested| Stop["Finish in-flight work<br/>preserve completed output"]
 ```
 
 CLI examples:
@@ -513,6 +514,7 @@ Fresh replacement requires confirmation. It also removes manual application link
 | `015_full_classification_reset.sql` | Account-scoped classification reset |
 | `016_durable_application_stars.sql` | Email-anchored star continuity and atomic star RPC |
 | `017_full_reset_application_overrides.sql` | Application-level manual override cleanup during full reset |
+| `018_last_successful_automation.sql` | Preserved last-success timestamp for dynamic scheduler health |
 
 ## Caching
 

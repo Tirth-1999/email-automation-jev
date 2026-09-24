@@ -36,3 +36,26 @@ test("Gmail ingestion orchestrator exposes a safe failed state", async () => {
   assert.equal(completed?.status, "failed");
   assert.match(completed?.error || "", /OAuth token expired/);
 });
+
+test("Gmail ingestion cancellation stops at the next progress checkpoint", async () => {
+  const orchestrator = new GmailIngestionOrchestrator();
+  let continueWork: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => { continueWork = resolve; });
+  orchestrator.start(async (report) => {
+    report("Fetching page one", { stage: "fetching", page: 1 });
+    await gate;
+    report("Fetching page two", { stage: "fetching", page: 2 });
+    throw new Error("not reached");
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(orchestrator.cancel(), true);
+  assert.match(orchestrator.current()?.message || "", /Stopping Gmail sync/);
+  continueWork?.();
+  const completed = await orchestrator.waitForCompletion();
+
+  assert.equal(completed?.status, "cancelled");
+  assert.equal(completed?.error, null);
+  assert.equal(completed?.message, "Gmail sync cancelled");
+  assert.equal(orchestrator.cancel(), false);
+});

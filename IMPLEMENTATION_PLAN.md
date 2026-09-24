@@ -30,7 +30,7 @@ Build a dependable job-email workspace that:
 | 8 | Human corrections and LLM reply drafts | Complete; GPT-4o Mini drafting is limited to Reply Needed emails | `npm run dashboard`<br>Open **Application Board → Emails**, select an email, correct its category or generate a draft<br>Configure `OPENAI_API_KEY`, `OPENAI_MODEL=gpt-4o-mini`, and optional `REPLY_WRITING_PROFILE` |
 | 9 | Email decisions and analytics | Complete; Kanban lanes, category/action filtering, live mailbox aggregates, confidence, benchmark quality, and durable-run performance | `npm run dashboard`<br>Open **Application Board → Emails** or **Analytics**<br>Click an Analytics category/action bar to inspect its source emails |
 | 10 | Application grouping, lifecycle, and application board | Complete for the classified corpus; deterministic identity rules plus confidence-gated Jev relationship checks handle reused Gmail threads, with automatic materialization, explainable ghosting, manual review, application Kanban, and Sankey | Apply `006_application_lifecycle.sql` once<br>Normally publish from **Command Center**; recovery: `npm run applications:group`<br>Open **Application Board → Applications** or **Analytics** |
-| 11 | Scheduling, observability, and draft assistance | Complete; hourly incremental orchestration, atomic lease, structured body-free logs, health probe, optional failure webhook, and reviewed drafts | Apply `007_operations_automation.sql` once<br>Test: `npm run automate:once`<br>Continuous runner: `npm run scheduler`<br>Probe: `GET /api/operations/health` |
+| 11 | Scheduling, observability, and draft assistance | Complete; hourly incremental orchestration, atomic lease, dynamic last-success health, structured body-free logs, health probe, optional failure webhook, and reviewed drafts | Apply `007_operations_automation.sql`, then `018_last_successful_automation.sql` once<br>Test: `npm run automate:once`<br>Continuous runner: `npm run scheduler`<br>Probe: `GET /api/operations/health` |
 | 12 | Targeted AI review, relationships, stars, and streaming reply workspace | Complete; migration 008 is live and the AI workspace preserves Jev, LLM, and human decisions separately | Apply `008_ai_assistance.sql` once<br>`npm run dashboard`, then open **AI** or **Application Board**<br>Optional measured eval: `npm run ai:evaluate -- --limit=20` |
 | 13A | Probabilistic company identity | Complete; all 4,583 applications staged with zero failures, then 3,325 company values and 1,323 titles promoted above the strict 90% gate | `npm run companies:resolve`<br>`npm run companies:promote -- --threshold=0.90` |
 | 13B | Jev-routed AI Chat | Complete; Jev conditionally invokes SQL and durable Supabase chat sessions support new, reopen, and archive flows | Apply migrations `011` and `013`<br>`npm run dashboard`<br>Open **AI Space → AI Chat** |
@@ -302,9 +302,9 @@ Status: complete. The TypeScript CLI and dashboard use the same durable worker. 
 9. Update aggregate counters continuously.
 10. Finish as `succeeded`, `partial`, `failed`, or `cancelled`.
 
-The CLI and dashboard call the same worker. A browser connection never owns the job. Command Center also calls the same incremental Gmail ingestion service as the CLI, reports newly inserted and updated emails, and prevents Gmail ingestion and production classification from overlapping.
+The CLI and dashboard call the same worker. A browser connection never owns the job. Command Center also calls the same incremental Gmail ingestion service as the CLI, reports newly inserted and updated emails, and prevents Gmail ingestion and production classification from overlapping. Its active-step controls cooperatively cancel Gmail sync, Jev classification, output publication, or the combined pipeline without discarding already completed work.
 
-Initial measured defaults: concurrency `5`, batch size `25`, maximum concurrency `10`, and at most `6` retry attempts.
+Initial measured defaults remain concurrency `5` and batch size `25`, with configurable ceilings of `250` concurrent calls and `1,000` emails per persistence batch. High settings are explicit stress controls because provider rate limits—not the local worker—remain the governing boundary.
 
 ### Command Center controls
 
@@ -323,7 +323,7 @@ A count-only preview shows selected, previously classified, to-process, and esti
 - Email IDs are selected once and inserted as queued result rows before inference starts.
 - Each worker batch bulk-loads email state from Supabase before Jev fan-out instead of issuing one competing read per email.
 - Scope supports all, unclassified, uncertain, failed, date-bounded, maximum-count, and explicit email selections.
-- Concurrency is limited to 1–10, batch size to 1–250, and SDK retries to 0–6.
+- Concurrency is limited to 1–250, batch size to 1–1,000, and SDK retries to 0–6. The UI labels the highest concurrency as a stress setting and keeps conservative defaults.
 - TypeSafe handles retryable connection, timeout, rate-limit, and server responses with exponential backoff, jitter, and `Retry-After` support.
 - Each completed batch is persisted with one bulk upsert; aggregate counters refresh after that batch commit.
 - Cancellation is durable and checked before scheduling the next batch.

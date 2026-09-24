@@ -17,6 +17,11 @@ interface EvaluationSet {
   emails: LabeledEmail[];
 }
 
+interface TypeSafeApiError {
+  status?: number;
+  body?: { detail?: { message?: string } };
+}
+
 function numericEnvironment(name: string, fallback: number): number {
   const raw = process.env[name]?.trim();
   if (!raw) return fallback;
@@ -50,6 +55,14 @@ if (!process.env.TYPESAFE_API_KEY?.trim() || process.env.TYPESAFE_API_KEY === "r
   throw new Error("Set TYPESAFE_API_KEY in .env before running the Jev evaluation");
 }
 
+function billingErrorMessage(error: unknown): string | null {
+  const apiError = error as TypeSafeApiError;
+  if (apiError?.status !== 402) return null;
+  return apiError.body?.detail?.message
+    || "Your TypeSafe organization has no available API credits.";
+}
+
+async function main(): Promise<void> {
 const model = process.env.TYPESAFE_MODEL?.trim() || "jev-1.13.0";
 const minimumTopProbability = numericEnvironment("JEV_MIN_TOP_PROBABILITY", 0.6);
 const concurrency = Math.floor(numericEnvironment("JEV_EVAL_CONCURRENCY", 5));
@@ -152,3 +165,14 @@ await writePrivateJson(
   report,
 );
 console.log(JSON.stringify(report.metrics, null, 2));
+}
+
+main().catch((error: unknown) => {
+  const billingMessage = billingErrorMessage(error);
+  console.error(
+    billingMessage
+      ? `Jev evaluation stopped: ${billingMessage}\nAdd credits at https://console.typesafe.ai/settings/billing, then rerun the same command.`
+      : `Jev evaluation failed: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exitCode = 1;
+});

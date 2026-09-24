@@ -140,6 +140,15 @@
       </main>
 
       <main id="commandView" class="command-view" hidden>
+        <section class="command-run-config" aria-label="Classification run settings">
+          <div class="command-run-config-copy"><strong>Classification settings</strong><small id="commandClassificationPolicy" class="classification-policy">Existing classifications and corrections stay unchanged.</small></div>
+          <div class="classification-options">
+            <label><span>Email scope</span><select id="commandClassificationScope"><option value="unclassified">New emails only</option><option value="all">Entire mailbox</option></select></label>
+            <label><span>Result handling</span><select id="commandClassificationResultMode" disabled><option value="preserve">Keep history</option><option value="replace">Drop old records + save fresh</option></select></label>
+            <label><span>Concurrency</span><select id="commandClassificationConcurrency"><option value="1">1 request</option><option value="5" selected>5 requests</option><option value="10">10 requests</option><option value="25">25 requests</option><option value="50">50 requests</option><option value="100">100 requests</option><option value="250">250 requests · stress</option></select></label>
+            <label><span>Batch size</span><select id="commandClassificationBatchSize"><option value="25" selected>25 emails</option><option value="100">100 emails</option><option value="250">250 emails</option><option value="500">500 emails</option><option value="1000">1,000 emails</option></select></label>
+          </div>
+        </section>
         <section class="pipeline-steps" aria-label="Email processing pipeline">
           <article id="ingestionStep" class="pipeline-step is-selected" data-pipeline-step="ingestion" tabindex="0" role="button" aria-pressed="true">
             <div class="pipeline-step-heading"><span class="pipeline-step-number">1</span><div><h3>Sync Gmail</h3><small id="commandAccount">Connected mailbox</small></div><span id="commandIngestionState" class="pipeline-state">Ready</span></div>
@@ -150,23 +159,18 @@
               <div><strong id="commandMailboxCount">—</strong><span>stored</span></div>
             </div>
             <div class="run-progress pipeline-progress"><span id="commandIngestionProgress"></span></div>
-            <button id="syncNewEmails" class="button primary" type="button">Sync new emails</button>
+            <div class="pipeline-actions"><button id="syncNewEmails" class="button primary" type="button">Sync new emails</button><button id="cancelCommandIngestion" class="button danger" type="button" hidden>Stop sync</button></div>
           </article>
           <article id="classificationStep" class="pipeline-step" data-pipeline-step="classification" tabindex="0" role="button" aria-pressed="false">
             <div class="pipeline-step-heading"><span class="pipeline-step-number">2</span><div><h3>Classify with Jev</h3><small>Durable production run</small></div><span id="commandClassificationState" class="pipeline-state">Ready</span></div>
             <p>Choose an incremental run or reclassify the complete mailbox.</p>
-            <div class="classification-options">
-              <label><span>Email scope</span><select id="commandClassificationScope"><option value="unclassified">New emails only</option><option value="all">Entire mailbox</option></select></label>
-              <label><span>Result handling</span><select id="commandClassificationResultMode" disabled><option value="preserve">Keep history</option><option value="replace">Drop old records + save fresh</option></select></label>
-            </div>
-            <small id="commandClassificationPolicy" class="classification-policy">Existing classifications and corrections stay unchanged.</small>
             <div class="pipeline-metrics">
               <div><strong id="commandUnclassifiedCount">—</strong><span>waiting</span></div>
               <div><strong id="commandClassifiedCount">—</strong><span>classified</span></div>
               <div><strong id="commandRunProgress">—</strong><span id="commandRunProgressLabel">last run</span></div>
             </div>
             <div class="run-progress pipeline-progress"><span id="commandClassificationProgress"></span></div>
-            <button id="startCommandClassification" class="button primary" type="button">Run Jev classification</button>
+            <div class="pipeline-actions"><button id="startCommandClassification" class="button primary" type="button">Run Jev classification</button><button id="cancelCommandClassification" class="button danger" type="button" hidden>Stop classification</button></div>
           </article>
           <article id="outputStep" class="pipeline-step" data-pipeline-step="outputs" tabindex="0" role="button" aria-pressed="false">
             <div class="pipeline-step-heading"><span class="pipeline-step-number">3</span><div><h3>Publish outputs</h3><small>Boards and analytics</small></div><span id="commandOutputState" class="pipeline-state">Ready</span></div>
@@ -177,7 +181,7 @@
               <div><strong id="commandCorrectionCount">—</strong><span>corrections</span></div>
             </div>
             <div class="run-progress pipeline-progress"><span id="commandOutputProgress"></span></div>
-            <div class="pipeline-actions"><button id="refreshCommandOutputs" class="button primary" type="button">Publish latest results</button></div>
+            <div class="pipeline-actions"><button id="refreshCommandOutputs" class="button primary" type="button">Publish latest results</button><button id="cancelCommandOutputs" class="button danger" type="button" hidden>Stop publishing</button></div>
           </article>
         </section>
         <section id="automationHealth" class="automation-health" aria-live="polite">

@@ -41,8 +41,8 @@ const lockTtlSeconds = integer("AUTOMATION_LOCK_TTL_SECONDS", 10800, 60, 21600);
 const classificationConfig: ClassificationWorkerConfig = {
   model: process.env.TYPESAFE_MODEL?.trim() || "jev-1.13.0",
   minimumTopProbability: Number(process.env.JEV_MIN_TOP_PROBABILITY || "0.6"),
-  concurrency: integer("AUTOMATION_JEV_CONCURRENCY", 5, 1, 10),
-  batchSize: integer("AUTOMATION_JEV_BATCH_SIZE", 25, 1, 250),
+  concurrency: integer("AUTOMATION_JEV_CONCURRENCY", 5, 1, 250),
+  batchSize: integer("AUTOMATION_JEV_BATCH_SIZE", 25, 1, 1_000),
   maxRetries: integer("AUTOMATION_JEV_MAX_RETRIES", 6, 0, 6),
 };
 validateClassificationConfig(classificationConfig);
