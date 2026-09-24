@@ -89,6 +89,7 @@ import {
   routeAiChatMessage,
   type AiChatHistoryMessage,
 } from "../../lib/ai-chat-router.js";
+import { buildGmailDeepLink } from "../../lib/gmail-deep-link.js";
 
 const port = Number.parseInt(process.env.LABELING_UI_PORT || "4173", 10);
 const projectRoot = process.cwd();
@@ -605,7 +606,15 @@ async function boardEmail(emailId: string): Promise<Record<string, unknown>> {
   ]);
   if (emailError) throw new Error(`Could not load email: ${emailError.message}`);
   if (boardError) throw new Error(`Could not load board decision: ${boardError.message}`);
-  return { ...(board as Record<string, unknown>), ...(email as Record<string, unknown>) };
+  const record = { ...(board as Record<string, unknown>), ...(email as Record<string, unknown>) };
+  return {
+    ...record,
+    gmail_url: buildGmailDeepLink({
+      gmail_message_id: typeof record.gmail_message_id === "string" ? record.gmail_message_id : null,
+      gmail_thread_id: typeof record.gmail_thread_id === "string" ? record.gmail_thread_id : null,
+      rfc_message_id: typeof record.rfc_message_id === "string" ? record.rfc_message_id : null,
+    }),
+  };
 }
 
 async function loadAiReviewSnapshot() {
@@ -1160,13 +1169,33 @@ async function applicationDetail(applicationId: string) {
   const emailIds = (links || []).map((link) => link.email_id as string);
   let emails: unknown[] = [];
   if (emailIds.length) {
-    const { data, error } = await database
-      .from("email_board")
-      .select("email_id,gmail_message_id,internal_date,direction,from_name,from_email,subject,snippet,effective_category,next_action,category_top_probability")
-      .in("email_id", emailIds)
-      .order("internal_date");
-    if (error) throw new Error(`Could not load application email evidence: ${error.message}`);
-    emails = data || [];
+    const [boardResult, identityResult] = await Promise.all([
+      database
+        .from("email_board")
+        .select("email_id,gmail_message_id,gmail_thread_id,internal_date,direction,from_name,from_email,subject,snippet,effective_category,next_action,category_top_probability")
+        .in("email_id", emailIds)
+        .order("internal_date"),
+      database
+        .from("emails")
+        .select("id,gmail_message_id,gmail_thread_id,rfc_message_id")
+        .in("id", emailIds),
+    ]);
+    if (boardResult.error) throw new Error(`Could not load application email evidence: ${boardResult.error.message}`);
+    if (identityResult.error) throw new Error(`Could not load application email identities: ${identityResult.error.message}`);
+    const identities = new Map((identityResult.data || []).map((row) => [String(row.id), row]));
+    emails = (boardResult.data || []).map((row) => {
+      const identity = identities.get(String(row.email_id));
+      const gmailIdentity = {
+        gmail_message_id: identity?.gmail_message_id || row.gmail_message_id,
+        gmail_thread_id: identity?.gmail_thread_id || row.gmail_thread_id,
+        rfc_message_id: identity?.rfc_message_id || null,
+      };
+      return {
+        ...row,
+        ...gmailIdentity,
+        gmail_url: buildGmailDeepLink(gmailIdentity),
+      };
+    });
   }
   return { application, messages: emails, events: events || [] };
 }

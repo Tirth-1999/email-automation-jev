@@ -313,6 +313,20 @@ function displayPercent(value) {
   return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "—";
 }
 
+function gmailDeepLink(email) {
+  if (email?.gmail_url) return email.gmail_url;
+
+  const rfcMessageId = String(email?.rfc_message_id || "").trim().replace(/^<|>$/g, "");
+  if (rfcMessageId) {
+    return `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(`in:anywhere rfc822msgid:${rfcMessageId}`)}`;
+  }
+
+  const conversationId = email?.gmail_thread_id || email?.gmail_message_id;
+  return conversationId
+    ? `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(conversationId)}`
+    : "https://mail.google.com/mail/u/0/";
+}
+
 function switchView(view, mode = null) {
   const labActive = view === "lab";
   const applicationBoardActive = view === "application_board";
@@ -1054,7 +1068,7 @@ function renderBattleground(report) {
     const subject = document.createElement(row.gmail_message_id ? "a" : "strong");
     subject.textContent = row.subject || "(no subject)";
     if (row.gmail_message_id) {
-      subject.href = `https://mail.google.com/mail/u/0/#all/${row.gmail_message_id}`;
+      subject.href = gmailDeepLink(row);
       subject.target = "_blank";
       subject.rel = "noreferrer";
       subject.title = row.snippet || row.subject || "Open original in Gmail";
@@ -1205,7 +1219,7 @@ function renderBoardDetail(email) {
   const subject = element("h3", "", email.subject || "(no subject)");
   const meta = element("p", "board-email-meta", `${[email.from_name, email.from_email].filter(Boolean).join(" · ") || "Unknown sender"} · ${new Date(email.internal_date).toLocaleString()}`);
   const gmail = element("a", "gmail-link", "Open original in Gmail ↗");
-  gmail.href = `https://mail.google.com/mail/u/0/#all/${email.gmail_message_id}`;
+  gmail.href = gmailDeepLink(email);
   gmail.target = "_blank";
   gmail.rel = "noreferrer";
   header.append(badges, subject, meta, gmail);
@@ -2104,7 +2118,7 @@ function renderApplicationDetail(payload) {
   const messageList = element("div", "application-messages");
   for (const message of payload.messages) {
     const link = element("a", "application-message");
-    link.href = `https://mail.google.com/mail/u/0/#all/${message.gmail_message_id}`;
+    link.href = gmailDeepLink(message);
     link.target = "_blank";
     link.rel = "noreferrer";
     link.append(
@@ -2577,7 +2591,7 @@ function createEmailPreview(resultRow) {
   body.textContent = email.body_text || "No plain-text body available.";
   const gmailLink = document.createElement("a");
   gmailLink.className = "benchmark-email-link";
-  gmailLink.href = `https://mail.google.com/mail/u/0/#all/${email.gmail_message_id}`;
+  gmailLink.href = gmailDeepLink(email);
   gmailLink.target = "_blank";
   gmailLink.rel = "noreferrer";
   gmailLink.textContent = "Open original in Gmail ↗";
@@ -3298,7 +3312,7 @@ function renderEmail() {
   document.querySelector("#date").textContent = new Date(email.internal_date).toLocaleString();
   document.querySelector("#snippet").textContent = email.snippet || "No snippet available.";
   document.querySelector("#emailBody").textContent = email.body_text || "No plain-text body available.";
-  document.querySelector("#gmailLink").href = `https://mail.google.com/mail/u/0/#all/${email.gmail_message_id}`;
+  document.querySelector("#gmailLink").href = gmailDeepLink(email);
   reviewNotes.value = result.notes || "";
 
   const badges = document.querySelector("#badges");
