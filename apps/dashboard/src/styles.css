@@ -653,6 +653,13 @@ button.analytics-bar-row:focus-visible, .distribution-column:focus-visible, .con
 .application-lane-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 10px; border-bottom: 1px solid var(--line); background: white; }
 .application-lane-heading strong { overflow: hidden; font-size: 10px; letter-spacing: .02em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
 .application-lane-heading span { padding: 3px 6px; border-radius: 999px; background: #eef1f5; color: var(--muted); font-size: 9px; font-weight: 850; }
+.interview-progress-filters { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.interview-progress-filter { width: 12px; height: 12px; padding: 0; border: 2px solid white; border-radius: 50%; cursor: pointer; box-shadow: 0 0 0 1px #cbd5e1; transition: transform 120ms ease, box-shadow 120ms ease; }
+.interview-progress-filter:hover { transform: scale(1.18); }
+.interview-progress-filter.active { box-shadow: 0 0 0 2px #172033, 0 0 0 4px white; }
+.interview-progress-filter.is-unmarked { background: #3b82f6; }
+.interview-progress-filter.is-pending { background: #e59b20; }
+.interview-progress-filter.is-completed { background: #22a65a; }
 .application-lane-cards { display: grid; grid-auto-rows: max-content; align-content: start; gap: 8px; padding: 9px; overflow-y: auto; }
 .application-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; width: 100%; min-height: 82px; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: white; color: var(--ink); text-align: left; }
 .application-card:hover, .application-card.active { border-color: #8ea6ff; background: var(--blue-soft); transform: translateY(-1px); }
@@ -662,12 +669,14 @@ button.analytics-bar-row:focus-visible, .distribution-column:focus-visible, .con
 .application-card small { padding-top: 6px; overflow-wrap: anywhere; border-top: 1px solid #edf0f4; color: var(--muted); font-size: 8px; }
 .application-star { align-self: start; margin: 8px 8px 0 0; padding: 4px; border: 0; background: transparent; color: #94a3b8; cursor: pointer; font-size: 19px; line-height: 1; }
 .application-star:hover, .application-star.active { color: #eab308; transform: scale(1.08); }
+.application-card.interview-progress-unmarked { border-color: #b9d2fb; background: #f3f7ff; }
 .application-card.interview-progress-pending { border-color: #f2d38a; background: #fffaf0; }
 .application-card.interview-progress-completed { border-color: #a9ddbd; background: #f1fbf5; }
+.application-card.interview-progress-unmarked:hover, .application-card.interview-progress-unmarked.active { background: #eaf2ff; }
 .application-card.interview-progress-pending:hover, .application-card.interview-progress-pending.active { background: #fff6df; }
 .application-card.interview-progress-completed:hover, .application-card.interview-progress-completed.active { background: #e8f8ee; }
 .application-interview-progress { display: grid; grid-column: 1 / -1; grid-template-columns: 8px minmax(0, 1fr); align-items: center; gap: 7px; padding: 7px 9px; border-top: 1px solid rgba(148, 163, 184, .2); }
-.interview-progress-dot { width: 7px; height: 7px; border-radius: 50%; background: #94a3b8; box-shadow: 0 0 0 3px rgba(148, 163, 184, .13); }
+.interview-progress-dot { width: 7px; height: 7px; border-radius: 50%; background: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, .13); }
 .interview-progress-pending .interview-progress-dot { background: #e59b20; box-shadow: 0 0 0 3px rgba(229, 155, 32, .14); }
 .interview-progress-completed .interview-progress-dot { background: #22a65a; box-shadow: 0 0 0 3px rgba(34, 166, 90, .14); }
 .application-interview-progress select { width: 100%; min-width: 0; height: 27px; border: 0; outline: 0; background-color: transparent; color: #475569; font-size: 9px; font-weight: 800; cursor: pointer; }

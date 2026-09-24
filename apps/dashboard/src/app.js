@@ -213,9 +213,12 @@ let applicationBoardViewState = (() => {
       boardScrollLeft: Number(saved.boardScrollLeft || 0),
       viewScrollTop: Number(saved.viewScrollTop || 0),
       statusFilter: typeof saved.statusFilter === "string" ? saved.statusFilter : "all",
+      interviewProgressFilter: ["unmarked", "pending", "completed"].includes(saved.interviewProgressFilter)
+        ? saved.interviewProgressFilter
+        : "all",
     };
   } catch {
-    return { loadedCounts: {}, laneScrollTop: {}, boardScrollLeft: 0, viewScrollTop: 0, statusFilter: "all" };
+    return { loadedCounts: {}, laneScrollTop: {}, boardScrollLeft: 0, viewScrollTop: 0, statusFilter: "all", interviewProgressFilter: "all" };
   }
 })();
 let currentLabMode = "quality";
@@ -2075,7 +2078,7 @@ function applicationCard(application, laneStatus) {
     const dot = element("span", "interview-progress-dot");
     const select = document.createElement("select");
     select.setAttribute("aria-label", `Interview progress for ${application.company || "this application"}`);
-    for (const [value, label] of [["", "Not marked"], ["pending", "Not completed"], ["completed", "Interview completed"]]) {
+    for (const [value, label] of [["", "Not marked"], ["pending", "Missed / reply needed"], ["completed", "Interview completed"]]) {
       const option = document.createElement("option");
       option.value = value;
       option.textContent = label;
@@ -2134,13 +2137,50 @@ function renderApplicationBoard() {
     const state = applicationLaneState[status] || { items: [], total: 0, hasMore: false, loading: true, error: null };
     const lane = element("section", `application-lane status-${status}`);
     lane.dataset.applicationLane = status;
-    const laneApplications = state.items;
+    const progressFilter = status === "interview_assessment" ? applicationBoardViewState.interviewProgressFilter : "all";
+    const laneApplications = progressFilter === "all"
+      ? state.items
+      : state.items.filter((application) => {
+        const progress = ["pending", "completed"].includes(application.interview_progress) ? application.interview_progress : "unmarked";
+        return progress === progressFilter;
+      });
     const heading = element("header", "application-lane-heading");
-    heading.append(element("strong", "", status === "starred" ? "★ Starred" : displayCategory(status)), element("span", "", state.loading && !laneApplications.length ? "…" : Number(state.total || 0).toLocaleString()));
+    const headingTitle = element("strong", "", status === "starred" ? "★ Starred" : displayCategory(status));
+    const headingCount = element("span", "", state.loading && !laneApplications.length
+      ? "…"
+      : progressFilter === "all"
+        ? Number(state.total || 0).toLocaleString()
+        : `${laneApplications.length.toLocaleString()} / ${Number(state.total || 0).toLocaleString()}`);
+    heading.append(headingTitle);
+    if (status === "interview_assessment") {
+      const filters = element("div", "interview-progress-filters");
+      filters.setAttribute("aria-label", "Filter interviews by progress");
+      for (const [value, label] of [["unmarked", "Not marked"], ["pending", "Missed, reply needed"], ["completed", "Interview completed"]]) {
+        const filter = element("button", `interview-progress-filter is-${value}${progressFilter === value ? " active" : ""}`);
+        filter.type = "button";
+        filter.title = `${label}${progressFilter === value ? "; click to show all" : ""}`;
+        filter.setAttribute("aria-label", filter.title);
+        filter.setAttribute("aria-pressed", String(progressFilter === value));
+        filter.addEventListener("click", () => {
+          applicationBoardViewState.interviewProgressFilter = progressFilter === value ? "all" : value;
+          applicationBoardViewState.laneScrollTop.interview_assessment = 0;
+          saveApplicationBoardViewState();
+          if (state.items.length < state.total) void loadApplicationLane("interview_assessment", false);
+          else renderApplicationBoard();
+        });
+        filters.append(filter);
+      }
+      heading.append(filters);
+    }
+    heading.append(headingCount);
     const cards = element("div", "application-lane-cards");
     if (state.error) cards.append(element("p", "board-lane-empty error", state.error));
     else if (state.loading && !laneApplications.length) cards.append(element("p", "board-lane-empty", "Loading recent applications…"));
-    else if (!laneApplications.length) cards.append(element("p", "board-lane-empty", status === "starred" ? "Star important applications to collect them here." : "No applications in this lane."));
+    else if (!laneApplications.length) cards.append(element("p", "board-lane-empty", status === "starred"
+      ? "Star important applications to collect them here."
+      : progressFilter !== "all"
+        ? "No interviews match this progress color."
+        : "No applications in this lane."));
     else for (const application of laneApplications) cards.append(applicationCard(application, status));
     if (state.hasMore) {
       const more = element("button", "lane-load-more", state.loading ? "Loading…" : "Load 30 more");
@@ -2319,7 +2359,8 @@ async function loadApplicationLane(status, append = false, renderImmediately = t
   try {
     const offset = append ? state.items.length : 0;
     const rememberedCount = Number(applicationBoardViewState.loadedCounts[status] || applicationPageSize);
-    const limit = append ? applicationPageSize : Math.max(applicationPageSize, Math.min(5_000, rememberedCount));
+    const filteringInterviewProgress = status === "interview_assessment" && applicationBoardViewState.interviewProgressFilter !== "all";
+    const limit = append ? applicationPageSize : filteringInterviewProgress ? 5_000 : Math.max(applicationPageSize, Math.min(5_000, rememberedCount));
     const params = status === "starred"
       ? `starred=true`
       : `status=${encodeURIComponent(status)}`;

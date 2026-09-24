@@ -16,8 +16,15 @@ test("interview progress is private to the Interview Assessment lane", async () 
   assert.match(migration, /set_application_interview_progress/);
   assert.match(migration, /application\.interview_progress/);
   assert.match(browser, /laneStatus === "interview_assessment"/);
+  assert.match(browser, /Missed \/ reply needed/);
   assert.match(browser, /Interview completed/);
+  assert.match(browser, /interviewProgressFilter/);
+  assert.match(browser, /Missed, reply needed/);
   assert.match(browser, /\/api\/applications\/interview-progress/);
+  assert.match(styles, /\.interview-progress-filter\.is-unmarked/);
+  assert.match(styles, /\.interview-progress-filter\.is-pending/);
+  assert.match(styles, /\.interview-progress-filter\.is-completed/);
+  assert.match(styles, /\.interview-progress-unmarked/);
   assert.match(styles, /\.interview-progress-completed/);
   assert.match(styles, /\.interview-progress-pending/);
   assert.match(server, /set_application_interview_progress/);
