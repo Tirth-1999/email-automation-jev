@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import {
   calculateBattlegroundMetrics,
@@ -23,7 +24,7 @@ function config(overrides: Partial<BattlegroundConfig> = {}): BattlegroundConfig
 
 function result(jevMs: number, overheadMs: number): BattlegroundResult {
   return {
-    email_id: crypto.randomUUID(),
+    email_id: randomUUID(),
     gmail_message_id: "gmail-id",
     subject: "Subject",
     sender: "Sender",
